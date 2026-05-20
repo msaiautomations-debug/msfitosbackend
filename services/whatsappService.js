@@ -6,13 +6,17 @@ process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || puppeteerCa
 
 const qrcode = require('qrcode');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 
 const clients = new Map();
 const authDataPath = path.join(__dirname, '..', '.wwebjs_auth');
 const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
 
 function getPuppeteerConfig() {
-  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined;
+  const executablePath = ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath)
+    || process.env.PUPPETEER_EXECUTABLE_PATH
+    || process.env.CHROME_BIN
+    || undefined;
   return {
     ...(executablePath ? { executablePath } : {}),
     headless: true,

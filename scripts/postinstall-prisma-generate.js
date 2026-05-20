@@ -6,6 +6,7 @@ const rootDir = path.resolve(__dirname, '..');
 const schemaPath = path.join(rootDir, 'prisma', 'schema.prisma');
 const generatedClientPath = path.join(rootDir, 'node_modules', '.prisma', 'client', 'index.js');
 const puppeteerCachePath = path.join(rootDir, '.cache', 'puppeteer');
+const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 const maxAttempts = 5;
 
 function sleep(ms) {
@@ -143,6 +144,7 @@ async function main() {
   }
 
   await runPuppeteerChromeInstall();
+  ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath);
   console.log('Puppeteer Chrome installed successfully.');
 }
 
