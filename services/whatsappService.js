@@ -12,6 +12,7 @@ const clients = new Map();
 const authDataPath = path.join(__dirname, '..', '.wwebjs_auth');
 const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
 const whatsappInitTimeoutMs = Number(process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000);
+const sharedWhatsappClientId = safeClientId(process.env.WHATSAPP_WEB_CLIENT_ID || 'msfitos-shared');
 
 function getPuppeteerConfig() {
   const executablePath = ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath)
@@ -32,6 +33,8 @@ function getPuppeteerConfig() {
       '--disable-background-timer-throttling',
       '--disable-breakpad',
       '--disable-crash-reporter',
+      '--disable-dbus',
+      '--disable-features=AudioServiceOutOfProcess,MediaRouter,OptimizationHints',
       '--disable-renderer-backgrounding',
       '--disable-software-rasterizer',
       '--disable-sync',
@@ -85,6 +88,10 @@ function safeClientId(gymId) {
   return String(gymId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+function getWhatsappSessionKey() {
+  return sharedWhatsappClientId;
+}
+
 function createState(gymId) {
   return {
     gymId,
@@ -112,8 +119,8 @@ function touch(state, patch) {
 }
 
 function getState(gymId) {
-  const key = safeClientId(gymId);
-  if (!clients.has(key)) clients.set(key, createState(gymId));
+  const key = getWhatsappSessionKey(gymId);
+  if (!clients.has(key)) clients.set(key, createState('shared'));
   return clients.get(key);
 }
 
@@ -163,7 +170,7 @@ async function startClient(gymId) {
 
   const client = new Client({
     authStrategy: new LocalAuth({
-      clientId: safeClientId(gymId),
+      clientId: sharedWhatsappClientId,
       dataPath: authDataPath,
     }),
     puppeteer: getPuppeteerConfig(),
