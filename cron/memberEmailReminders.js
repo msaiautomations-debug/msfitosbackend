@@ -1,0 +1,427 @@
+const cron = require('node-cron');
+const prisma = require('../utils/prisma');
+const { sendEmail } = require('../services/emailService');
+const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
+const { renderMembershipEmail } = require('../services/membershipEmailService');
+const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
+const { sendWhatsappMessage } = require('../services/whatsappService');
+
+const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '0 9 * * *';
+let isRunning = false;
+
+function addDays(date, days) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+}
+
+function dayWindowUtc(date) {
+  const start = new Date(date);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setUTCHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+async function sendMemberEmail({ gym, member, subject, body, type }) {
+  const rendered = renderMembershipEmail({
+    template: { subject, body },
+    member,
+    gymName: gym.gym_name,
+  });
+
+  await sendEmail({
+    to: member.email,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+  });
+
+  await prisma.email_notifications.create({
+    data: {
+      gym_id: gym.id,
+      type,
+      status: 'sent',
+      subject: rendered.subject,
+      payload: {
+        member_id: member.id,
+        member_name: member.name,
+        email: member.email,
+      },
+    },
+  });
+
+  return rendered.subject;
+}
+
+function formatDateForMessage(date) {
+  if (!date) return '';
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+function renderWhatsappBody(body, { gym, member, lastCheckinDate }) {
+  const values = {
+    member_name: member?.name || 'Member',
+    gym_name: gym?.gym_name || 'Your gym',
+    expiry_date: formatDateForMessage(member?.expiry_date),
+    amount_due: String(Number(member?.amount || 0)),
+    last_checkin_date: lastCheckinDate ? formatDateForMessage(lastCheckinDate) : '',
+  };
+
+  return String(body || '')
+    .replace(/\{\{\s*(member_name|gym_name|expiry_date|amount_due|last_checkin_date)\s*\}\}/g, (_, key) => values[key] || '')
+    .replace(/\{(member_name|gym_name|expiry_date|amount_due|last_checkin_date)\}/g, (_, key) => values[key] || '')
+    .trim();
+}
+
+async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) {
+  const message = renderWhatsappBody(body, { gym, member, lastCheckinDate });
+  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message });
+  await logGymNotification({
+    gym_id: gym.id,
+    member_id: member.id,
+    type,
+    message,
+    status: 'sent',
+  });
+}
+
+async function processExpiringReminderEmails({ gym, settings }) {
+  if (!settings.enable_7_day_reminder) return;
+
+  const target = addDays(new Date(), Number(settings.reminder_7_days_before || 0));
+  const { start, end } = dayWindowUtc(target);
+
+  const members = await prisma.members.findMany({
+    where: {
+      gym_id: gym.id,
+      is_inactive: false,
+      expiry_date: { gte: start, lte: end },
+      reminder_7_sent: false,
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      expiry_date: true,
+      amount: true,
+    },
+  });
+
+  for (const member of members) {
+    let delivered = false;
+
+    try {
+      let subject = settings.email_subject_expiring;
+      if (member.email) {
+        subject = await sendMemberEmail({
+          gym,
+          member,
+          subject: settings.email_subject_expiring,
+          body: settings.email_body_expiring,
+          type: 'member_expiring_email',
+        });
+        delivered = true;
+      }
+
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.email_body_expiring,
+          type: 'member_expiring_whatsapp',
+        });
+        delivered = true;
+      } catch (whatsappErr) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'member_expiring_whatsapp',
+          message: whatsappErr?.message || 'Failed to send expiring reminder WhatsApp',
+          status: 'failed',
+        });
+      }
+
+      if (!delivered) continue;
+
+      await prisma.members.update({
+        where: { id: member.id },
+        data: { reminder_7_sent: true },
+      });
+
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'member_expiring_email',
+        message: subject,
+        status: 'sent',
+      });
+    } catch (err) {
+      const message = err?.message || 'Failed to send expiring reminder email';
+      console.error('Expiring reminder email failed', gym.id, member.id, message);
+      await prisma.email_notifications.create({
+        data: {
+          gym_id: gym.id,
+          type: 'member_expiring_email',
+          status: 'failed',
+          subject: settings.email_subject_expiring,
+          error_message: message,
+          payload: {
+            member_id: member.id,
+            member_name: member.name,
+            email: member.email || null,
+          },
+        },
+      });
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'member_expiring_email',
+        message,
+        status: 'failed',
+      });
+    }
+  }
+}
+
+async function processInactiveReminderEmails({ gym, settings }) {
+  if (!settings.enable_inactive_reminder) return;
+
+  const thresholdDays = Number(settings.inactive_days_threshold || 14);
+  const cutoff = addDays(new Date(), -thresholdDays);
+
+  const rows = await prisma.$queryRaw`
+    SELECT m.id, m.gym_id, m.name, m.email, m.phone, m.start_date, m.expiry_date, m.amount, m.is_inactive,
+           MAX(a.checkin_at) AS last_checkin
+    FROM "members" m
+    LEFT JOIN "attendances" a ON a.member_id = m.id
+    WHERE m.gym_id = ${gym.id}
+      AND m.expiry_date >= ${new Date()}
+    GROUP BY m.id
+  `;
+
+  for (const member of rows) {
+    if (member.is_inactive) continue;
+
+    const lastCheckin = member.last_checkin || member.start_date;
+    if (!lastCheckin) continue;
+    if (new Date(lastCheckin) > cutoff) continue;
+
+    try {
+      let subject = settings.email_subject_inactive;
+      let delivered = false;
+
+      if (member.email) {
+        subject = await sendMemberEmail({
+          gym,
+          member: {
+            ...member,
+            last_checkin_date: lastCheckin,
+          },
+          subject: settings.email_subject_inactive,
+          body: settings.email_body_inactive,
+          type: 'inactive_member_email',
+        });
+        delivered = true;
+      }
+
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.email_body_inactive,
+          type: 'inactive_member_whatsapp',
+          lastCheckinDate: lastCheckin,
+        });
+        delivered = true;
+      } catch (whatsappErr) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'inactive_member_whatsapp',
+          message: whatsappErr?.message || 'Failed to send inactive reminder WhatsApp',
+          status: 'failed',
+        });
+      }
+
+      if (!delivered) continue;
+
+      await prisma.members.update({
+        where: { id: member.id },
+        data: { is_inactive: true, inactive_since: new Date() },
+      });
+
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'inactive_member_email',
+        message: subject,
+        status: 'sent',
+      });
+
+    } catch (err) {
+      const message = err?.message || 'Failed to send inactive reminder email';
+      console.error('Inactive reminder email failed', gym.id, member.id, message);
+      await prisma.email_notifications.create({
+        data: {
+          gym_id: gym.id,
+          type: 'inactive_member_email',
+          status: 'failed',
+          subject: settings.email_subject_inactive,
+          error_message: message,
+          payload: {
+            member_id: member.id,
+            member_name: member.name,
+            email: member.email || null,
+          },
+        },
+      });
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'inactive_member_email',
+        message,
+        status: 'failed',
+      });
+    }
+  }
+}
+
+async function processBirthdayEmails({ gym, settings }) {
+  if (!settings.enable_birthday_message) return;
+
+  const today = new Date();
+  const day = today.getUTCDate();
+  const month = today.getUTCMonth() + 1;
+
+  const members = await prisma.$queryRaw`
+    SELECT id, gym_id, name, email, phone, dob
+    FROM "members"
+    WHERE gym_id = ${gym.id}
+      AND dob IS NOT NULL
+      AND EXTRACT(MONTH FROM dob) = ${month}
+      AND EXTRACT(DAY FROM dob) = ${day}
+  `;
+
+  for (const member of members) {
+    const alreadySent = await hasSentGymNotificationToday({
+      gym_id: gym.id,
+      member_id: member.id,
+      type: 'birthday_email',
+    });
+    if (alreadySent) continue;
+
+    try {
+      let subject = settings.email_subject_birthday;
+      if (member.email) {
+        subject = await sendMemberEmail({
+          gym,
+          member,
+          subject: settings.email_subject_birthday,
+          body: settings.email_body_birthday,
+          type: 'birthday_email',
+        });
+      }
+
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'birthday_email',
+        message: subject,
+        status: member.email ? 'sent' : 'skipped',
+      });
+
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.email_body_birthday || settings.message_birthday,
+          type: 'birthday_whatsapp',
+        });
+      } catch (whatsappErr) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'birthday_whatsapp',
+          message: whatsappErr?.message || 'Failed to send birthday WhatsApp',
+          status: 'failed',
+        });
+      }
+    } catch (err) {
+      const message = err?.message || 'Failed to send birthday email';
+      console.error('Birthday email failed', gym.id, member.id, message);
+      await prisma.email_notifications.create({
+        data: {
+          gym_id: gym.id,
+          type: 'birthday_email',
+          status: 'failed',
+          subject: settings.email_subject_birthday,
+          error_message: message,
+          payload: {
+            member_id: member.id,
+            member_name: member.name,
+            email: member.email || null,
+          },
+        },
+      });
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'birthday_email',
+        message,
+        status: 'failed',
+      });
+    }
+  }
+}
+
+async function processGym(gym, now) {
+  if (!gym.email_notifications_enabled) return;
+  const settings = await getOrCreateReminderSettings(gym.id);
+
+  await processExpiringReminderEmails({ gym, settings });
+  await processInactiveReminderEmails({ gym, settings });
+  await processBirthdayEmails({ gym, settings });
+}
+
+async function runOnce(now = new Date()) {
+  const gyms = await prisma.gyms.findMany({
+    select: {
+      id: true,
+      gym_name: true,
+      email_notifications_enabled: true,
+    },
+  });
+
+  for (const gym of gyms) {
+    await processGym(gym, now);
+  }
+}
+
+function start() {
+  const options = {};
+  if (process.env.CRON_TIMEZONE) options.timezone = process.env.CRON_TIMEZONE;
+
+  cron.schedule(
+    MEMBER_EMAIL_REMINDER_CRON,
+    async () => {
+      if (isRunning) {
+        console.warn('Member email reminder cron skipped because a previous run is still in progress');
+        return;
+      }
+
+      isRunning = true;
+      try {
+        await runOnce();
+      } catch (err) {
+        console.error('Member email reminder cron failed', err);
+      } finally {
+        isRunning = false;
+      }
+    },
+    options,
+  );
+}
+
+module.exports = { start, runOnce };
