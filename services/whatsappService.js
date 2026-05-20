@@ -11,6 +11,7 @@ const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 const clients = new Map();
 const authDataPath = path.join(__dirname, '..', '.wwebjs_auth');
 const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
+const whatsappInitTimeoutMs = Number(process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000);
 
 function getPuppeteerConfig() {
   const executablePath = ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath)
@@ -20,6 +21,7 @@ function getPuppeteerConfig() {
   return {
     ...(executablePath ? { executablePath } : {}),
     headless: true,
+    protocolTimeout: whatsappInitTimeoutMs,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -31,6 +33,13 @@ function getPuppeteerConfig() {
       '--disable-breakpad',
       '--disable-crash-reporter',
       '--disable-renderer-backgrounding',
+      '--disable-software-rasterizer',
+      '--disable-sync',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
     ],
   };
 }
@@ -108,6 +117,37 @@ function getState(gymId) {
   return clients.get(key);
 }
 
+function waitForWhatsappStartup(client, state) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+
+    const timer = setTimeout(() => {
+      fail(new Error(`WhatsApp startup timed out after ${Math.round(whatsappInitTimeoutMs / 1000)} seconds. Chrome is likely blocked or too slow on this host.`));
+    }, whatsappInitTimeoutMs);
+
+    client.once('qr', () => finish('qr'));
+    client.once('ready', () => finish('ready'));
+    client.once('auth_failure', (message) => fail(new Error(message || 'WhatsApp authentication failed')));
+    client.once('disconnected', (reason) => fail(new Error(reason || 'WhatsApp disconnected during startup')));
+
+    client.initialize().catch(fail);
+  });
+}
+
 async function startClient(gymId) {
   const state = getState(gymId);
 
@@ -141,6 +181,14 @@ async function startClient(gymId) {
     }
   });
 
+  client.on('loading_screen', (percent, message) => {
+    touch(state, {
+      status: 'initializing',
+      qr: null,
+      message: `Loading WhatsApp Web ${percent || 0}%${message ? ` - ${message}` : ''}`,
+    });
+  });
+
   client.on('authenticated', () => {
     touch(state, { status: 'authenticated', qr: null, message: 'WhatsApp authenticated' });
   });
@@ -160,9 +208,14 @@ async function startClient(gymId) {
   });
 
   try {
-    await client.initialize();
+    await waitForWhatsappStartup(client, state);
   } catch (error) {
     touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to start WhatsApp' });
+    try {
+      await client.destroy();
+    } catch {
+      // best effort cleanup
+    }
     state.client = null;
   }
 
