@@ -12,6 +12,11 @@ const {
 } = require('../controllers/adminController');
 const { authenticateAdmin } = require('../middlewares/adminAuth');
 const { listWebsiteInquiriesAdmin } = require('../controllers/websiteInquiryController');
+const {
+  getAdminWhatsappStatus,
+  startAdminWhatsapp,
+  logoutAdminWhatsapp,
+} = require('../controllers/adminWhatsappController');
 
 const router = express.Router();
 
@@ -25,5 +30,8 @@ router.post('/gyms/:id/membership-plans', authenticateAdmin, createGymMembership
 router.put('/gyms/:id/membership-plans/:planId', authenticateAdmin, updateGymMembershipPlan);
 router.get('/gym-bookings', authenticateAdmin, listGymBookings);
 router.get('/website-inquiries', authenticateAdmin, listWebsiteInquiriesAdmin);
+router.get('/whatsapp/status', authenticateAdmin, getAdminWhatsappStatus);
+router.post('/whatsapp/start', authenticateAdmin, startAdminWhatsapp);
+router.post('/whatsapp/logout', authenticateAdmin, logoutAdminWhatsapp);
 
 module.exports = router;
