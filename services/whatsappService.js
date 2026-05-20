@@ -28,6 +28,8 @@ function getPuppeteerConfig() {
       '--disable-extensions',
       '--disable-background-networking',
       '--disable-background-timer-throttling',
+      '--disable-breakpad',
+      '--disable-crash-reporter',
       '--disable-renderer-backgrounding',
     ],
   };
