@@ -9,10 +9,11 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 
 const clients = new Map();
-const authDataPath = path.join(__dirname, '..', '.wwebjs_auth');
+const authDataPath = process.env.WHATSAPP_WEB_AUTH_DATA_PATH || path.join(__dirname, '..', '.wwebjs_auth');
 const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
 const whatsappInitTimeoutMs = Number(process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000);
 const sharedWhatsappClientId = safeClientId(process.env.WHATSAPP_WEB_CLIENT_ID || 'msfitos-shared');
+const autoRestoreSavedSession = process.env.WHATSAPP_WEB_AUTO_RESTORE !== 'false';
 
 function getPuppeteerConfig() {
   const executablePath = ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath)
@@ -92,6 +93,46 @@ function getWhatsappSessionKey() {
   return sharedWhatsappClientId;
 }
 
+function getSharedSessionPath() {
+  return path.join(authDataPath, `session-${sharedWhatsappClientId}`);
+}
+
+function getSavedSessionDirs() {
+  try {
+    if (!fs.existsSync(authDataPath)) return [];
+    return fs
+      .readdirSync(authDataPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('session-'))
+      .map((entry) => {
+        const sessionPath = path.join(authDataPath, entry.name);
+        const stats = fs.statSync(sessionPath);
+        return { name: entry.name, path: sessionPath, mtimeMs: stats.mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return [];
+  }
+}
+
+function hasSavedAuthSession() {
+  return getSavedSessionDirs().length > 0;
+}
+
+function ensureSharedSessionFromSavedAuth() {
+  const sharedSessionPath = getSharedSessionPath();
+  if (fs.existsSync(sharedSessionPath) || process.env.WHATSAPP_WEB_ADOPT_LEGACY_SESSION === 'false') return;
+
+  const legacySession = getSavedSessionDirs().find((session) => session.path !== sharedSessionPath);
+  if (!legacySession) return;
+
+  try {
+    fs.cpSync(legacySession.path, sharedSessionPath, { recursive: true });
+    console.info(`Adopted WhatsApp auth session ${legacySession.name} as session-${sharedWhatsappClientId}`);
+  } catch (error) {
+    console.warn(`Could not adopt WhatsApp auth session ${legacySession.name}: ${error?.message || error}`);
+  }
+}
+
 function createState(gymId) {
   return {
     gymId,
@@ -101,6 +142,7 @@ function createState(gymId) {
     message: null,
     updatedAt: new Date().toISOString(),
     client: null,
+    startPromise: null,
   };
 }
 
@@ -162,11 +204,18 @@ async function startClient(gymId) {
     return serializeState(state);
   }
 
+  if (state.startPromise) {
+    await state.startPromise.catch(() => null);
+    return serializeState(state);
+  }
+
   const blockReason = getWhatsAppStartupBlockReason();
   if (blockReason) {
     touch(state, { status: 'error', qr: null, message: blockReason });
     return serializeState(state);
   }
+
+  ensureSharedSessionFromSavedAuth();
 
   const client = new Client({
     authStrategy: new LocalAuth({
@@ -215,7 +264,8 @@ async function startClient(gymId) {
   });
 
   try {
-    await waitForWhatsappStartup(client, state);
+    state.startPromise = waitForWhatsappStartup(client, state);
+    await state.startPromise;
   } catch (error) {
     touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to start WhatsApp' });
     try {
@@ -224,13 +274,32 @@ async function startClient(gymId) {
       // best effort cleanup
     }
     state.client = null;
+  } finally {
+    state.startPromise = null;
   }
 
   return serializeState(state);
 }
 
 async function getStatus(gymId) {
-  return serializeState(getState(gymId));
+  const state = getState(gymId);
+  const canRestore =
+    autoRestoreSavedSession &&
+    !state.client &&
+    !state.startPromise &&
+    ['idle', 'disconnected', 'error'].includes(state.status) &&
+    hasSavedAuthSession();
+
+  if (canRestore) {
+    touch(state, { status: 'initializing', qr: null, message: 'Restoring saved WhatsApp session' });
+    startClient(gymId).catch((error) => {
+      touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to restore WhatsApp session' });
+      state.client = null;
+      state.startPromise = null;
+    });
+  }
+
+  return serializeState(state);
 }
 
 function normalizePhoneForWhatsapp(phone) {
@@ -244,7 +313,13 @@ function normalizePhoneForWhatsapp(phone) {
 async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
   const state = getState(gymId);
   if (!state.client || state.status !== 'ready') {
-    throw new Error('WhatsApp is not connected. Open Marketing & Engagement and scan the QR code.');
+    if (autoRestoreSavedSession && hasSavedAuthSession()) {
+      await startClient(gymId);
+    }
+  }
+
+  if (!state.client || state.status !== 'ready') {
+    throw new Error('WhatsApp is not connected. Open Admin WhatsApp and scan the QR code once.');
   }
 
   const digits = normalizePhoneForWhatsapp(phone);
