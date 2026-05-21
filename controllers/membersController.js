@@ -1245,7 +1245,7 @@ const sendPendingPaymentWhatsapps = async (req, res) => {
 
     const gym = await prisma.gyms.findUnique({
       where: { id: gym_id },
-      select: { gym_name: true },
+      select: { gym_name: true, logo_url: true },
     });
 
     const memberIds = recipients
@@ -1277,7 +1277,7 @@ const sendPendingPaymentWhatsapps = async (req, res) => {
           customMessage: custom_message,
         });
 
-        await sendWhatsappMessage({ gymId: gym_id, phone, message });
+        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
         await logGymNotification({
           gym_id,
           member_id: member.id,
@@ -1447,7 +1447,7 @@ const sendMembershipStatusWhatsapps = async (req, res) => {
     const [gym, settings] = await Promise.all([
       prisma.gyms.findUnique({
         where: { id: gym_id },
-        select: { gym_name: true },
+        select: { gym_name: true, logo_url: true },
       }),
       getOrCreateReminderSettings(gym_id),
     ]);
@@ -1479,7 +1479,7 @@ const sendMembershipStatusWhatsapps = async (req, res) => {
           gymName: gym?.gym_name,
         });
 
-        await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message });
+        await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
         await logGymNotification({
           gym_id,
           member_id: member.id,

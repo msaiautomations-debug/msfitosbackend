@@ -76,7 +76,7 @@ function renderWhatsappBody(body, { gym, member, lastCheckinDate }) {
 
 async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) {
   const message = renderWhatsappBody(body, { gym, member, lastCheckinDate });
-  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message });
+  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
   await logGymNotification({
     gym_id: gym.id,
     member_id: member.id,
@@ -390,6 +390,7 @@ async function runOnce(now = new Date()) {
     select: {
       id: true,
       gym_name: true,
+      logo_url: true,
       email_notifications_enabled: true,
     },
   });

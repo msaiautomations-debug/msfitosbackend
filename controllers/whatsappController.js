@@ -29,7 +29,11 @@ const sendTestWhatsapp = async (req, res) => {
   if (!phone) return res.status(400).json({ error: 'Phone number is required' });
 
   try {
-    const result = await sendWhatsappMessage({ gymId: req.gym_id, phone, message });
+    const gym = await prisma.gyms.findUnique({
+      where: { id: req.gym_id },
+      select: { logo_url: true },
+    });
+    const result = await sendWhatsappMessage({ gymId: req.gym_id, phone, message, mediaUrl: gym?.logo_url });
     await logGymNotification({
       gym_id: req.gym_id,
       type: 'whatsapp_test',
@@ -71,13 +75,17 @@ const broadcastFitnessTip = async (req, res) => {
   });
 
   const message = `${tip.title}\n\n${tip.message}`;
+  const gym = await prisma.gyms.findUnique({
+    where: { id: req.gym_id },
+    select: { logo_url: true },
+  });
   let sent = 0;
   let failed = 0;
   const results = [];
 
   for (const member of members) {
     try {
-      await sendWhatsappMessage({ gymId: req.gym_id, phone: member.phone, message });
+      await sendWhatsappMessage({ gymId: req.gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
       await logGymNotification({
         gym_id: req.gym_id,
         member_id: member.id,

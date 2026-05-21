@@ -11,6 +11,20 @@ function findChromeExecutable(cacheDir) {
   const explicitPath = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN;
   if (explicitPath && fs.existsSync(explicitPath)) return explicitPath;
 
+  if (process.platform === 'win32') {
+    const windowsCandidates = [
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    ].filter(Boolean);
+
+    for (const candidate of windowsCandidates) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+
   const chromeRoot = path.join(cacheDir, 'chrome');
   if (!fs.existsSync(chromeRoot)) return null;
 

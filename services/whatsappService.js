@@ -5,7 +5,7 @@ const puppeteerCachePath = path.join(__dirname, '..', '.cache', 'puppeteer');
 process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath;
 
 const qrcode = require('qrcode');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 
 const clients = new Map();
@@ -241,7 +241,7 @@ function normalizePhoneForWhatsapp(phone) {
   return digits;
 }
 
-async function sendWhatsappMessage({ gymId, phone, message }) {
+async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
   const state = getState(gymId);
   if (!state.client || state.status !== 'ready') {
     throw new Error('WhatsApp is not connected. Open Marketing & Engagement and scan the QR code.');
@@ -253,7 +253,16 @@ async function sendWhatsappMessage({ gymId, phone, message }) {
   const text = String(message || '').trim();
   if (!text) throw new Error('Message is empty');
 
-  await state.client.sendMessage(`${digits}@c.us`, text);
+  const chatId = `${digits}@c.us`;
+  const safeMediaUrl = String(mediaUrl || '').trim();
+
+  if (safeMediaUrl) {
+    const media = await MessageMedia.fromUrl(safeMediaUrl, { unsafeMime: true });
+    await state.client.sendMessage(chatId, media, { caption: text });
+    return { phone: digits };
+  }
+
+  await state.client.sendMessage(chatId, text);
   return { phone: digits };
 }
 

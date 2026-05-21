@@ -28,6 +28,7 @@ model gyms {
   subscription_status         String                @default("inactive")
   razorpay_key_id             String?
   razorpay_key_secret         String?
+  logo_url                    String?
   created_at                  DateTime              @default(now())
   attendances                 attendances[]
   email_notifications         email_notifications[]
