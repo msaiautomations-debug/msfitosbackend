@@ -721,7 +721,9 @@ const uploadAdminDietPlan = async (req, res) => {
 
     if (!uploadResponse.ok) {
       const details = await uploadResponse.text().catch(() => '');
-      throw new Error(details || 'Failed to upload diet plan PDF to Supabase');
+      return res.status(uploadResponse.status >= 400 && uploadResponse.status < 500 ? 400 : 502).json({
+        error: details || 'Failed to upload diet plan PDF to Supabase',
+      });
     }
 
     const dietPlanUrl = `${supabaseUrl}/storage/v1/object/public/${SUPABASE_DIET_PLAN_BUCKET}/${objectPath}?v=${Date.now()}`;

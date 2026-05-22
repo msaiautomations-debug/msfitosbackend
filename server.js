@@ -79,6 +79,16 @@ const cronJobs = {
   memberEmailReminders: 'stopped',
 };
 
+function shouldSkipRateLimit(req) {
+  return (
+    req.path === '/api/health' ||
+    req.path === '/api/ping' ||
+    req.path === '/' ||
+    req.path === '/api/admin/whatsapp/status' ||
+    req.path === '/api/whatsapp/status'
+  );
+}
+
 function serializeError(error) {
   return {
     message: error?.message || 'Unknown error',
@@ -134,7 +144,7 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.ip,
-  skip: (req) => req.path === '/api/health' || req.path === '/api/ping' || req.path === '/',
+  skip: shouldSkipRateLimit,
   message: {
     error: `Too many requests from this IP. Please try again after 15 minutes.`,
   },
