@@ -12,6 +12,9 @@ const clients = new Map();
 const authDataPath = process.env.WHATSAPP_WEB_AUTH_DATA_PATH || path.join(__dirname, '..', '.wwebjs_auth');
 const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
 const whatsappInitTimeoutMs = Number(process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000);
+const whatsappStartupStaleMs = Number(
+  process.env.WHATSAPP_WEB_STARTUP_STALE_MS || Math.max(whatsappInitTimeoutMs * 2, 5 * 60 * 1000),
+);
 const sharedWhatsappClientId = safeClientId(process.env.WHATSAPP_WEB_CLIENT_ID || 'msfitos-shared');
 const autoRestoreSavedSession = process.env.WHATSAPP_WEB_AUTO_RESTORE !== 'false';
 
@@ -160,6 +163,25 @@ function touch(state, patch) {
   Object.assign(state, patch, { updatedAt: new Date().toISOString() });
 }
 
+function isStartupStatus(status) {
+  return ['initializing', 'authenticated', 'qr'].includes(status);
+}
+
+function isStartupStale(state) {
+  if (!isStartupStatus(state.status)) return false;
+  const updatedAtMs = Date.parse(state.updatedAt || '');
+  return Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs > whatsappStartupStaleMs;
+}
+
+async function destroyClientSafely(client) {
+  if (!client) return;
+  try {
+    await client.destroy();
+  } catch {
+    // best effort cleanup
+  }
+}
+
 function getState(gymId) {
   const key = getWhatsappSessionKey(gymId);
   if (!clients.has(key)) clients.set(key, createState('shared'));
@@ -200,6 +222,13 @@ function waitForWhatsappStartup(client, state) {
 async function startClient(gymId) {
   const state = getState(gymId);
 
+  if (state.client && isStartupStale(state)) {
+    await destroyClientSafely(state.client);
+    state.client = null;
+    state.startPromise = null;
+    touch(state, { status: 'idle', qr: null, message: 'Restarting stale WhatsApp session' });
+  }
+
   if (state.client && ['initializing', 'qr', 'ready', 'authenticated'].includes(state.status)) {
     return serializeState(state);
   }
@@ -238,6 +267,14 @@ async function startClient(gymId) {
   });
 
   client.on('loading_screen', (percent, message) => {
+    if (state.status === 'ready') {
+      touch(state, {
+        qr: null,
+        message: `WhatsApp is reconnecting ${percent || 0}%${message ? ` - ${message}` : ''}`,
+      });
+      return;
+    }
+
     touch(state, {
       status: 'initializing',
       qr: null,
@@ -257,10 +294,15 @@ async function startClient(gymId) {
   client.on('disconnected', (reason) => {
     touch(state, { status: 'disconnected', qr: null, message: reason || 'WhatsApp disconnected' });
     state.client = null;
+    state.startPromise = null;
+    destroyClientSafely(client).catch(() => undefined);
   });
 
   client.on('auth_failure', (message) => {
     touch(state, { status: 'auth_failure', qr: null, message: message || 'WhatsApp authentication failed' });
+    state.client = null;
+    state.startPromise = null;
+    destroyClientSafely(client).catch(() => undefined);
   });
 
   try {
@@ -268,11 +310,7 @@ async function startClient(gymId) {
     await state.startPromise;
   } catch (error) {
     touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to start WhatsApp' });
-    try {
-      await client.destroy();
-    } catch {
-      // best effort cleanup
-    }
+    await destroyClientSafely(client);
     state.client = null;
   } finally {
     state.startPromise = null;
@@ -283,6 +321,17 @@ async function startClient(gymId) {
 
 async function getStatus(gymId) {
   const state = getState(gymId);
+
+  if (state.client && isStartupStale(state)) {
+    const staleMessage = state.status === 'qr'
+      ? 'WhatsApp QR expired. Starting a fresh QR session.'
+      : 'WhatsApp session was stuck while starting. Restarting it now.';
+    await destroyClientSafely(state.client);
+    state.client = null;
+    state.startPromise = null;
+    touch(state, { status: 'idle', qr: null, message: staleMessage });
+  }
+
   const canRestore =
     autoRestoreSavedSession &&
     !state.client &&
