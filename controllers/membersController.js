@@ -201,6 +201,16 @@ function formatCurrencyForMessage(amount) {
   }).format(Number(amount || 0));
 }
 
+function formatPaymentMethodForMessage(method) {
+  const normalized = String(method || '').trim();
+  if (!normalized) return 'Pending';
+  return normalized
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function calculateBmi(heightCm, weightKg) {
   const height = Number(heightCm || 0);
   const weight = Number(weightKg || 0);
@@ -211,24 +221,53 @@ function calculateBmi(heightCm, weightKg) {
   return Math.round(bmi * 10) / 10;
 }
 
+function getBmiCategory(bmi) {
+  const value = Number(bmi || 0);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (value < 18.5) return 'Underweight';
+  if (value < 25) return 'Healthy range';
+  if (value < 30) return 'Overweight';
+  return 'Obesity range';
+}
+
+function buildBmiMessageLine(member) {
+  if (!member.bmi) return null;
+  const bmi = Number(member.bmi).toFixed(1);
+  const category = getBmiCategory(member.bmi);
+  return category ? `BMI: ${bmi} (${category})` : `BMI: ${bmi}`;
+}
+
 function buildNewMemberWelcomeMessage({ gym, member }) {
   const planName = member.membership_plan?.name || `${Number(member.plan_duration || 0)} day membership`;
   const paymentStatus = member.payment_method ? 'Paid' : 'Pending';
-  const bmiLine = member.bmi ? [`BMI: ${Number(member.bmi).toFixed(1)}`] : [];
+  const paymentMethod = formatPaymentMethodForMessage(member.payment_method);
+  const bmiLine = buildBmiMessageLine(member);
 
   return [
     `Hi ${member.name}, welcome to ${gym.gym_name}!`,
     '',
-    'Thank you for joining us.',
+    'Thank you for joining us. Here are your membership details:',
     `Membership: ${planName}`,
     `Duration: ${Number(member.plan_duration || 0)} days`,
-    `Start Date: ${formatDateForMessage(member.start_date)}`,
+    `Date of Joining: ${formatDateForMessage(member.start_date)}`,
     `Expiry Date: ${formatDateForMessage(member.expiry_date)}`,
-    `Amount: ${formatCurrencyForMessage(member.amount)}`,
+    `Payment Amount: ${formatCurrencyForMessage(member.amount)}`,
+    `Payment Method: ${paymentMethod}`,
     `Payment Status: ${paymentStatus}`,
-    ...bmiLine,
+    ...(bmiLine ? [bmiLine] : []),
     '',
-    'Your fitness journey starts now.',
+    'Your fitness journey starts now. Please follow your workouts and diet plan consistently.',
+  ].join('\n');
+}
+
+function buildNewMemberDietPlanCaption({ gym, member }) {
+  const bmiLine = buildBmiMessageLine(member);
+
+  return [
+    `Hi ${member.name}, please see your diet plan from ${gym.gym_name}.`,
+    ...(bmiLine ? [`Reference ${bmiLine}.`] : []),
+    `This plan is shared for your current membership ending on ${formatDateForMessage(member.expiry_date)}.`,
+    'Follow it regularly and connect with your trainer/gym team if you need changes based on your progress.',
   ].join('\n');
 }
 
@@ -269,7 +308,7 @@ async function sendNewMemberWelcomeWhatsapp({ gym_id, member }) {
     const dietPlanPdfUrl = dietPlanSettings?.diet_plan_pdf_url;
 
     if (dietPlanPdfUrl) {
-      const caption = `Hi ${member.name}, here is your diet plan from ${gym.gym_name}.`;
+      const caption = buildNewMemberDietPlanCaption({ gym, member });
       await sendWhatsappMedia({
         gymId: gym.id,
         phone: member.phone,
