@@ -390,6 +390,30 @@ async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
   return { phone: digits };
 }
 
+async function sendWhatsappMedia({ gymId, phone, mediaUrl, caption = '' }) {
+  const state = getState(gymId);
+  if (!state.client || state.status !== 'ready') {
+    if (autoRestoreSavedSession && hasSavedAuthSession()) {
+      await startClient(gymId);
+    }
+  }
+
+  if (!state.client || state.status !== 'ready') {
+    throw new Error('WhatsApp is not connected. Open Admin WhatsApp and scan the QR code once.');
+  }
+
+  const digits = normalizePhoneForWhatsapp(phone);
+  if (!digits) throw new Error('Invalid WhatsApp phone number');
+
+  const safeMediaUrl = String(mediaUrl || '').trim();
+  if (!safeMediaUrl) throw new Error('Media URL is required');
+
+  const chatId = `${digits}@c.us`;
+  const media = await MessageMedia.fromUrl(safeMediaUrl, { unsafeMime: true });
+  await state.client.sendMessage(chatId, media, { caption: String(caption || '').trim() });
+  return { phone: digits };
+}
+
 async function logoutClient(gymId) {
   const state = getState(gymId);
   if (state.client) {
@@ -417,5 +441,6 @@ module.exports = {
   startClient,
   logoutClient,
   sendWhatsappMessage,
+  sendWhatsappMedia,
   normalizePhoneForWhatsapp,
 };

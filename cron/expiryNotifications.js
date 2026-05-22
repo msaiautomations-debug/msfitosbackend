@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const prisma = require('../utils/prisma');
 const { sendEmail } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
+const { sendWhatsappMessage } = require('../services/whatsappService');
+const { logGymNotification } = require('../services/notificationService');
 
 const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 5 * * *';
 let isRunning = false;
@@ -105,6 +107,31 @@ function buildTextSection(title, rows) {
     .join('\n')}`;
 }
 
+function buildWhatsappSummaryText({ gymName, expiredRows, pendingRows, now }) {
+  const lines = [
+    `Daily Summary - ${gymName}`,
+    `Date: ${formatDate(now)}`,
+    `Expired memberships: ${expiredRows.length}`,
+    `Pending payments: ${pendingRows.length}`,
+  ];
+
+  const appendRows = (title, rows) => {
+    lines.push('', title);
+    if (!rows.length) {
+      lines.push('None');
+      return;
+    }
+    rows.slice(0, 10).forEach((row) => {
+      lines.push(`${row.name} | ${row.phone} | ${row.expiry} | ${row.amount}`);
+    });
+    if (rows.length > 10) lines.push(`+${rows.length - 10} more`);
+  };
+
+  appendRows('Expired Members', expiredRows);
+  appendRows('Pending Payments', pendingRows);
+  return lines.join('\n');
+}
+
 function formatCurrency(amount) {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
@@ -165,10 +192,13 @@ async function getSummaryRows(gymId) {
 }
 
 async function processGym(gym, now, { force = false } = {}) {
-  if (!gym.email_notifications_enabled || !gym.email) return { sent: false, reason: 'email-disabled' };
+  if (!gym.email_notifications_enabled) return { sent: false, reason: 'notifications-disabled' };
 
   const settings = await getOrCreateReminderSettings(gym.id);
-  if (!settings.enable_owner_daily_summary_email && !force) {
+  const emailEnabled = Boolean(settings.enable_owner_daily_summary_email && gym.email);
+  const whatsappEnabled = Boolean(settings.enable_owner_daily_summary_whatsapp && gym.phone);
+
+  if (!force && !emailEnabled && !whatsappEnabled) {
     return { sent: false, reason: 'summary-disabled' };
   }
 
@@ -190,21 +220,26 @@ async function processGym(gym, now, { force = false } = {}) {
     buildTextSection('Pending Payments', pendingRows),
   ].join('\n');
 
+  let sentAny = false;
+
   try {
-    await sendEmail({ to: gym.email, subject, html, text });
-    await prisma.email_notifications.create({
-      data: {
-        gym_id: gym.id,
-        type: force ? 'owner_daily_summary_test' : 'owner_daily_summary',
-        status: 'sent',
-        subject,
-        payload: {
-          expired_members: expiredRows.length,
-          pending_payments: pendingRows.length,
+    if (emailEnabled || force) {
+      if (!gym.email) throw new Error('Gym email not found');
+      await sendEmail({ to: gym.email, subject, html, text });
+      await prisma.email_notifications.create({
+        data: {
+          gym_id: gym.id,
+          type: force ? 'owner_daily_summary_test' : 'owner_daily_summary',
+          status: 'sent',
+          subject,
+          payload: {
+            expired_members: expiredRows.length,
+            pending_payments: pendingRows.length,
+          },
         },
-      },
-    });
-    return { sent: true };
+      });
+      sentAny = true;
+    }
   } catch (err) {
     console.error('Owner daily summary email failed for gym', gym.id, err?.message || err);
     await prisma.email_notifications.create({
@@ -221,8 +256,31 @@ async function processGym(gym, now, { force = false } = {}) {
         retry_count: 1,
       },
     });
-    return { sent: false, reason: 'send-failed' };
   }
+
+  if (!force && whatsappEnabled) {
+    const message = buildWhatsappSummaryText({ gymName: gym.gym_name, expiredRows, pendingRows, now });
+    try {
+      await sendWhatsappMessage({ gymId: gym.id, phone: gym.phone, message, mediaUrl: gym.logo_url });
+      await logGymNotification({
+        gym_id: gym.id,
+        type: 'owner_daily_summary_whatsapp',
+        message,
+        status: 'sent',
+      });
+      sentAny = true;
+    } catch (err) {
+      const messageText = err?.message || 'Failed to send owner daily summary WhatsApp';
+      await logGymNotification({
+        gym_id: gym.id,
+        type: 'owner_daily_summary_whatsapp',
+        message: messageText,
+        status: 'failed',
+      });
+    }
+  }
+
+  return sentAny ? { sent: true } : { sent: false, reason: 'send-failed' };
 }
 
 async function runOnce() {
@@ -232,6 +290,8 @@ async function runOnce() {
       id: true,
       gym_name: true,
       email: true,
+      phone: true,
+      logo_url: true,
       email_notifications_enabled: true,
     },
   });
@@ -273,6 +333,8 @@ async function sendTestEmailForGym(gym_id) {
       id: true,
       gym_name: true,
       email: true,
+      phone: true,
+      logo_url: true,
       email_notifications_enabled: true,
     },
   });

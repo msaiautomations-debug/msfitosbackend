@@ -8,7 +8,7 @@ const {
   getMembershipEmailTemplate,
   renderMembershipEmail,
 } = require('../services/membershipEmailService');
-const { sendWhatsappMessage } = require('../services/whatsappService');
+const { sendWhatsappMedia, sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
 
 function addDays(date, days) {
@@ -51,6 +51,9 @@ function buildMemberListItem(row) {
     email: row.email,
     dob: row.dob,
     plan_duration: Number(row.plan_duration || 0),
+    height_cm: row.height_cm === null || row.height_cm === undefined ? null : Number(row.height_cm),
+    weight_kg: row.weight_kg === null || row.weight_kg === undefined ? null : Number(row.weight_kg),
+    bmi: row.bmi === null || row.bmi === undefined ? null : Number(row.bmi),
     start_date: row.start_date,
     expiry_date: row.expiry_date,
     amount: Number(row.amount || 0),
@@ -190,6 +193,112 @@ function buildPendingPaymentWhatsapp({ gymName, memberName, amountDue, customMes
   ].join('\n');
 }
 
+function formatCurrencyForMessage(amount) {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0,
+  }).format(Number(amount || 0));
+}
+
+function calculateBmi(heightCm, weightKg) {
+  const height = Number(heightCm || 0);
+  const weight = Number(weightKg || 0);
+  if (!height || !weight) return null;
+  const heightM = height / 100;
+  const bmi = weight / (heightM * heightM);
+  if (!Number.isFinite(bmi)) return null;
+  return Math.round(bmi * 10) / 10;
+}
+
+function buildNewMemberWelcomeMessage({ gym, member }) {
+  const planName = member.membership_plan?.name || `${Number(member.plan_duration || 0)} day membership`;
+  const paymentStatus = member.payment_method ? 'Paid' : 'Pending';
+  const bmiLine = member.bmi ? [`BMI: ${Number(member.bmi).toFixed(1)}`] : [];
+
+  return [
+    `Hi ${member.name}, welcome to ${gym.gym_name}!`,
+    '',
+    'Thank you for joining us.',
+    `Membership: ${planName}`,
+    `Duration: ${Number(member.plan_duration || 0)} days`,
+    `Start Date: ${formatDateForMessage(member.start_date)}`,
+    `Expiry Date: ${formatDateForMessage(member.expiry_date)}`,
+    `Amount: ${formatCurrencyForMessage(member.amount)}`,
+    `Payment Status: ${paymentStatus}`,
+    ...bmiLine,
+    '',
+    'Your fitness journey starts now.',
+  ].join('\n');
+}
+
+async function sendNewMemberWelcomeWhatsapp({ gym_id, member }) {
+  const gym = await prisma.gyms.findUnique({
+    where: { id: gym_id },
+    select: {
+      id: true,
+      gym_name: true,
+      logo_url: true,
+    },
+  });
+
+  if (!gym || !member.phone) return { sent: false, reason: 'missing-gym-or-phone' };
+
+  const message = buildNewMemberWelcomeMessage({ gym, member });
+
+  try {
+    await sendWhatsappMessage({
+      gymId: gym.id,
+      phone: member.phone,
+      message,
+      mediaUrl: gym.logo_url,
+    });
+
+    await logGymNotification({
+      gym_id: gym.id,
+      member_id: member.id,
+      type: 'new_member_welcome_whatsapp',
+      message,
+      status: 'sent',
+    });
+
+    const dietPlanSettings = await prisma.website_pricing_settings.findUnique({
+      where: { id: 'default' },
+      select: { diet_plan_pdf_url: true },
+    });
+    const dietPlanPdfUrl = dietPlanSettings?.diet_plan_pdf_url;
+
+    if (dietPlanPdfUrl) {
+      const caption = `Hi ${member.name}, here is your diet plan from ${gym.gym_name}.`;
+      await sendWhatsappMedia({
+        gymId: gym.id,
+        phone: member.phone,
+        mediaUrl: dietPlanPdfUrl,
+        caption,
+      });
+      await logGymNotification({
+        gym_id: gym.id,
+        member_id: member.id,
+        type: 'new_member_diet_plan_whatsapp',
+        message: caption,
+        status: 'sent',
+      });
+    }
+
+    return { sent: true };
+  } catch (error) {
+    const errorMessage = error?.message || 'Failed to send new member welcome WhatsApp';
+    await logGymNotification({
+      gym_id: gym.id,
+      member_id: member.id,
+      type: 'new_member_welcome_whatsapp',
+      message: errorMessage,
+      status: 'failed',
+    });
+    return { sent: false, reason: errorMessage };
+  }
+}
+
 function buildMembershipEmailWhere(gym_id, type) {
   const today = new Date();
   if (type === 'expired') {
@@ -228,6 +337,8 @@ const addMember = async (req, res) => {
       dob,
       plan_duration,
       plan_id,
+      height_cm,
+      weight_kg,
       start_date,
       amount,
       payment_method,
@@ -243,6 +354,9 @@ const addMember = async (req, res) => {
     const safeDob = dobDate && !Number.isNaN(dobDate.getTime()) ? dobDate : null;
     const parsedPlanDuration = parseInt(plan_duration, 10);
     const parsedAmount = parseFloat(amount || 0);
+    const parsedHeightCm = height_cm === undefined || height_cm === null || height_cm === '' ? null : Number(height_cm);
+    const parsedWeightKg = weight_kg === undefined || weight_kg === null || weight_kg === '' ? null : Number(weight_kg);
+    const parsedBmi = calculateBmi(parsedHeightCm, parsedWeightKg);
     const normalizedPaymentMethod =
       payment_method && String(payment_method).trim().toLowerCase() !== 'pending'
         ? String(payment_method).trim().toLowerCase()
@@ -251,6 +365,12 @@ const addMember = async (req, res) => {
 
     if (!emailPattern.test(cleanEmail)) {
       return res.status(400).json({ error: 'Valid email is required' });
+    }
+    if (parsedHeightCm !== null && (!Number.isFinite(parsedHeightCm) || parsedHeightCm <= 0 || parsedHeightCm > 300)) {
+      return res.status(400).json({ error: 'Valid height in cm is required' });
+    }
+    if (parsedWeightKg !== null && (!Number.isFinite(parsedWeightKg) || parsedWeightKg <= 0 || parsedWeightKg > 500)) {
+      return res.status(400).json({ error: 'Valid weight in kg is required' });
     }
 
     const duplicateMember = await findDuplicateMemberByContact({ gym_id, phone: cleanPhone, email: cleanEmail });
@@ -262,6 +382,8 @@ const addMember = async (req, res) => {
       cleanEmail,
       start.toISOString(),
       parsedPlanDuration,
+      parsedHeightCm || '',
+      parsedWeightKg || '',
       parsedAmount,
       normalizedPaymentMethod || '',
     ].join('|');
@@ -305,6 +427,9 @@ const addMember = async (req, res) => {
           email: cleanEmail,
           dob: safeDob,
           plan_duration: parsedPlanDuration,
+          height_cm: parsedHeightCm,
+          weight_kg: parsedWeightKg,
+          bmi: parsedBmi,
           plan_id: safePlanId,
           start_date: start,
           expiry_date: expiry,
@@ -332,8 +457,13 @@ const addMember = async (req, res) => {
     });
 
     invalidateDashboardCache(gym_id);
+    const welcome_whatsapp = await sendNewMemberWelcomeWhatsapp({ gym_id, member }).catch((error) => ({
+      sent: false,
+      reason: error?.message || 'Failed to send welcome WhatsApp',
+    }));
     res.status(201).json({
       member,
+      welcome_whatsapp,
       warning: duplicateMember ? 'User with same email or phone no. already exists.' : null,
       duplicate_member: duplicateMember,
     });
@@ -438,6 +568,31 @@ const editMember = async (req, res) => {
         return res.status(400).json({ error: 'Valid plan_duration is required' });
       }
       data.plan_duration = parsedPlanDuration;
+    }
+
+    if (data.height_cm !== undefined) {
+      data.height_cm = data.height_cm === null || data.height_cm === '' ? null : Number(data.height_cm);
+      if (data.height_cm !== null && (!Number.isFinite(data.height_cm) || data.height_cm <= 0 || data.height_cm > 300)) {
+        return res.status(400).json({ error: 'Valid height in cm is required' });
+      }
+    }
+
+    if (data.weight_kg !== undefined) {
+      data.weight_kg = data.weight_kg === null || data.weight_kg === '' ? null : Number(data.weight_kg);
+      if (data.weight_kg !== null && (!Number.isFinite(data.weight_kg) || data.weight_kg <= 0 || data.weight_kg > 500)) {
+        return res.status(400).json({ error: 'Valid weight in kg is required' });
+      }
+    }
+
+    if (data.height_cm !== undefined || data.weight_kg !== undefined) {
+      const existingMetrics = await prisma.members.findFirst({
+        where: { id, gym_id },
+        select: { height_cm: true, weight_kg: true },
+      });
+      if (!existingMetrics) return res.status(404).json({ error: 'Member not found' });
+      const nextHeight = data.height_cm !== undefined ? data.height_cm : existingMetrics.height_cm;
+      const nextWeight = data.weight_kg !== undefined ? data.weight_kg : existingMetrics.weight_kg;
+      data.bmi = calculateBmi(nextHeight, nextWeight);
     }
 
     if (data.amount !== undefined) {
@@ -934,8 +1089,11 @@ const searchMembers = async (req, res) => {
             m.phone,
             m.email,
             m.dob,
-            m.plan_duration,
-            m.start_date,
+          m.plan_duration,
+          m.height_cm,
+          m.weight_kg,
+          m.bmi,
+          m.start_date,
             m.expiry_date,
             m.amount,
             m.payment_status,
@@ -1453,6 +1611,10 @@ const sendMembershipStatusWhatsapps = async (req, res) => {
     ]);
 
     const template = getMembershipEmailTemplate(settings, type);
+    const whatsappTemplate =
+      type === 'expired'
+        ? settings.whatsapp_body_expired || template.body
+        : settings.whatsapp_body_expiring || template.body;
     const where = {
       ...buildMembershipEmailWhere(gym_id, type),
       ...(memberIds.length ? { id: { in: memberIds } } : {}),
@@ -1474,7 +1636,7 @@ const sendMembershipStatusWhatsapps = async (req, res) => {
 
     for (const member of members) {
       try {
-        const message = renderWhatsappTemplate(customMessage || template.body, {
+        const message = renderWhatsappTemplate(customMessage || whatsappTemplate, {
           member,
           gymName: gym?.gym_name,
         });

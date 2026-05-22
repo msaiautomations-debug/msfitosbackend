@@ -8,6 +8,9 @@ const {
   createGymPayment,
   createGymMembershipPlan,
   updateGymMembershipPlan,
+  getAdminDietPlan,
+  uploadAdminDietPlan,
+  removeAdminDietPlan,
   listGymBookings,
 } = require('../controllers/adminController');
 const { authenticateAdmin } = require('../middlewares/adminAuth');
@@ -21,6 +24,9 @@ const {
 const router = express.Router();
 
 router.post('/login', adminLogin);
+router.get('/diet-plan', authenticateAdmin, getAdminDietPlan);
+router.put('/diet-plan', authenticateAdmin, express.raw({ type: 'application/pdf', limit: '5mb' }), uploadAdminDietPlan);
+router.delete('/diet-plan', authenticateAdmin, removeAdminDietPlan);
 router.get('/gyms', authenticateAdmin, listGyms);
 router.get('/gyms/:id', authenticateAdmin, getGymDetails);
 router.put('/gyms/:id', authenticateAdmin, updateGym);

@@ -7,6 +7,23 @@ const {
 } = require('../services/websitePricingService');
 
 const DEFAULT_ADMIN_PASSWORD = 'MS@Fitness2024';
+const MAX_DIET_PLAN_BYTES = 5 * 1024 * 1024;
+const SUPABASE_DIET_PLAN_BUCKET = process.env.SUPABASE_DIET_PLAN_BUCKET || 'diet-plans';
+
+function getRequiredSupabaseConfig() {
+  const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Supabase storage is not configured on the server');
+  }
+
+  return { supabaseUrl, serviceRoleKey };
+}
+
+function sanitizeStoragePathPart(value) {
+  return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_') || 'gym';
+}
 
 function calculateTrialDaysRemaining(trialEndDate, now) {
   if (!trialEndDate) return null;
@@ -651,6 +668,99 @@ const listGymBookings = async (req, res) => {
   }
 };
 
+const getAdminDietPlan = async (req, res) => {
+  try {
+    const settings = await prisma.website_pricing_settings.upsert({
+      where: { id: 'default' },
+      update: {},
+      create: { id: 'default' },
+      select: { diet_plan_pdf_url: true },
+    });
+
+    return res.json({ diet_plan_pdf_url: settings.diet_plan_pdf_url || null });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to load diet plan PDF',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+const uploadAdminDietPlan = async (req, res) => {
+  try {
+    const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const fileBuffer = Buffer.isBuffer(req.body) ? req.body : null;
+
+    if (contentType !== 'application/pdf') {
+      return res.status(400).json({ error: 'Only PDF diet plans are allowed' });
+    }
+
+    if (!fileBuffer?.length) {
+      return res.status(400).json({ error: 'Diet plan PDF is required' });
+    }
+
+    if (fileBuffer.length > MAX_DIET_PLAN_BYTES) {
+      return res.status(400).json({ error: 'Diet plan PDF must be less than 5MB' });
+    }
+
+    const { supabaseUrl, serviceRoleKey } = getRequiredSupabaseConfig();
+    const objectPath = `${sanitizeStoragePathPart('global')}/diet-plan.pdf`;
+    const uploadUrl = `${supabaseUrl}/storage/v1/object/${SUPABASE_DIET_PLAN_BUCKET}/${objectPath}`;
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        'Content-Type': contentType,
+        'x-upsert': 'true',
+      },
+      body: fileBuffer,
+    });
+
+    if (!uploadResponse.ok) {
+      const details = await uploadResponse.text().catch(() => '');
+      throw new Error(details || 'Failed to upload diet plan PDF to Supabase');
+    }
+
+    const dietPlanUrl = `${supabaseUrl}/storage/v1/object/public/${SUPABASE_DIET_PLAN_BUCKET}/${objectPath}?v=${Date.now()}`;
+    const settings = await prisma.website_pricing_settings.upsert({
+      where: { id: 'default' },
+      update: { diet_plan_pdf_url: dietPlanUrl },
+      create: { id: 'default', diet_plan_pdf_url: dietPlanUrl },
+      select: { diet_plan_pdf_url: true },
+    });
+
+    return res.json({ diet_plan_pdf_url: settings.diet_plan_pdf_url, message: 'Diet plan uploaded' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to upload diet plan PDF',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+const removeAdminDietPlan = async (req, res) => {
+  try {
+    const settings = await prisma.website_pricing_settings.upsert({
+      where: { id: 'default' },
+      update: { diet_plan_pdf_url: null },
+      create: { id: 'default', diet_plan_pdf_url: null },
+      select: { diet_plan_pdf_url: true },
+    });
+
+    return res.json({ diet_plan_pdf_url: settings.diet_plan_pdf_url, message: 'Diet plan removed' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to remove diet plan PDF',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
 module.exports = {
   adminLogin,
   listGyms,
@@ -660,5 +770,8 @@ module.exports = {
   createGymPayment,
   createGymMembershipPlan,
   updateGymMembershipPlan,
+  getAdminDietPlan,
+  uploadAdminDietPlan,
+  removeAdminDietPlan,
   listGymBookings,
 };

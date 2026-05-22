@@ -6,7 +6,7 @@ const { renderMembershipEmail } = require('../services/membershipEmailService');
 const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
 const { sendWhatsappMessage } = require('../services/whatsappService');
 
-const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '0 9 * * *';
+const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 let isRunning = false;
 
 function addDays(date, days) {
@@ -86,8 +86,16 @@ async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) 
   });
 }
 
+function shouldRunMemberMessages(now, settings) {
+  const hour = Number(settings.member_email_send_hour ?? 10);
+  const minute = Number(settings.member_email_send_minute ?? 0);
+  return now.getHours() === hour && now.getMinutes() === minute;
+}
+
 async function processExpiringReminderEmails({ gym, settings }) {
-  if (!settings.enable_7_day_reminder) return;
+  const sendEmailEnabled = settings.enable_7_day_reminder && settings.enable_7_day_reminder_email;
+  const sendWhatsappEnabled = settings.enable_7_day_reminder && settings.enable_7_day_reminder_whatsapp;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const target = addDays(new Date(), Number(settings.reminder_7_days_before || 0));
   const { start, end } = dayWindowUtc(target);
@@ -114,7 +122,7 @@ async function processExpiringReminderEmails({ gym, settings }) {
 
     try {
       let subject = settings.email_subject_expiring;
-      if (member.email) {
+      if (sendEmailEnabled && member.email) {
         subject = await sendMemberEmail({
           gym,
           member,
@@ -125,22 +133,24 @@ async function processExpiringReminderEmails({ gym, settings }) {
         delivered = true;
       }
 
-      try {
-        await sendMemberWhatsapp({
-          gym,
-          member,
-          body: settings.email_body_expiring,
-          type: 'member_expiring_whatsapp',
-        });
-        delivered = true;
-      } catch (whatsappErr) {
-        await logGymNotification({
-          gym_id: gym.id,
-          member_id: member.id,
-          type: 'member_expiring_whatsapp',
-          message: whatsappErr?.message || 'Failed to send expiring reminder WhatsApp',
-          status: 'failed',
-        });
+      if (sendWhatsappEnabled) {
+        try {
+          await sendMemberWhatsapp({
+            gym,
+            member,
+            body: settings.whatsapp_body_expiring,
+            type: 'member_expiring_whatsapp',
+          });
+          delivered = true;
+        } catch (whatsappErr) {
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: 'member_expiring_whatsapp',
+            message: whatsappErr?.message || 'Failed to send expiring reminder WhatsApp',
+            status: 'failed',
+          });
+        }
       }
 
       if (!delivered) continue;
@@ -185,8 +195,106 @@ async function processExpiringReminderEmails({ gym, settings }) {
   }
 }
 
+async function processExpiredReminderMessages({ gym, settings }) {
+  if (!settings.enable_expiry_email && !settings.enable_expiry_whatsapp) return;
+
+  const target = addDays(new Date(), -Number(settings.expiry_email_delay_days || 0));
+  const { start, end } = dayWindowUtc(target);
+
+  const members = await prisma.members.findMany({
+    where: {
+      gym_id: gym.id,
+      is_inactive: false,
+      expiry_date: { gte: start, lte: end },
+      expiry_notified: false,
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      expiry_date: true,
+      amount: true,
+    },
+  });
+
+  for (const member of members) {
+    let delivered = false;
+
+    try {
+      let subject = settings.email_subject_expired;
+      if (settings.enable_expiry_email && member.email) {
+        subject = await sendMemberEmail({
+          gym,
+          member,
+          subject: settings.email_subject_expired,
+          body: settings.email_body_expired,
+          type: 'member_expired_email',
+        });
+        delivered = true;
+      }
+
+      if (settings.enable_expiry_whatsapp) {
+        try {
+          await sendMemberWhatsapp({
+            gym,
+            member,
+            body: settings.whatsapp_body_expired,
+            type: 'member_expired_whatsapp',
+          });
+          delivered = true;
+        } catch (whatsappErr) {
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: 'member_expired_whatsapp',
+            message: whatsappErr?.message || 'Failed to send expired reminder WhatsApp',
+            status: 'failed',
+          });
+        }
+      }
+
+      if (!delivered) continue;
+
+      await prisma.members.update({
+        where: { id: member.id },
+        data: { expiry_notified: true },
+      });
+
+      if (settings.enable_expiry_email) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'member_expired_email',
+          message: subject,
+          status: member.email ? 'sent' : 'skipped',
+        });
+      }
+    } catch (err) {
+      const message = err?.message || 'Failed to send expired reminder email';
+      console.error('Expired reminder email failed', gym.id, member.id, message);
+      await prisma.email_notifications.create({
+        data: {
+          gym_id: gym.id,
+          type: 'member_expired_email',
+          status: 'failed',
+          subject: settings.email_subject_expired,
+          error_message: message,
+          payload: {
+            member_id: member.id,
+            member_name: member.name,
+            email: member.email || null,
+          },
+        },
+      });
+    }
+  }
+}
+
 async function processInactiveReminderEmails({ gym, settings }) {
-  if (!settings.enable_inactive_reminder) return;
+  const sendEmailEnabled = settings.enable_inactive_reminder && settings.enable_inactive_email;
+  const sendWhatsappEnabled = settings.enable_inactive_reminder && settings.enable_inactive_whatsapp;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const thresholdDays = Number(settings.inactive_days_threshold || 14);
   const cutoff = addDays(new Date(), -thresholdDays);
@@ -212,7 +320,7 @@ async function processInactiveReminderEmails({ gym, settings }) {
       let subject = settings.email_subject_inactive;
       let delivered = false;
 
-      if (member.email) {
+      if (sendEmailEnabled && member.email) {
         subject = await sendMemberEmail({
           gym,
           member: {
@@ -226,23 +334,25 @@ async function processInactiveReminderEmails({ gym, settings }) {
         delivered = true;
       }
 
-      try {
-        await sendMemberWhatsapp({
-          gym,
-          member,
-          body: settings.email_body_inactive,
-          type: 'inactive_member_whatsapp',
-          lastCheckinDate: lastCheckin,
-        });
-        delivered = true;
-      } catch (whatsappErr) {
-        await logGymNotification({
-          gym_id: gym.id,
-          member_id: member.id,
-          type: 'inactive_member_whatsapp',
-          message: whatsappErr?.message || 'Failed to send inactive reminder WhatsApp',
-          status: 'failed',
-        });
+      if (sendWhatsappEnabled) {
+        try {
+          await sendMemberWhatsapp({
+            gym,
+            member,
+            body: settings.whatsapp_body_inactive,
+            type: 'inactive_member_whatsapp',
+            lastCheckinDate: lastCheckin,
+          });
+          delivered = true;
+        } catch (whatsappErr) {
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: 'inactive_member_whatsapp',
+            message: whatsappErr?.message || 'Failed to send inactive reminder WhatsApp',
+            status: 'failed',
+          });
+        }
       }
 
       if (!delivered) continue;
@@ -289,7 +399,9 @@ async function processInactiveReminderEmails({ gym, settings }) {
 }
 
 async function processBirthdayEmails({ gym, settings }) {
-  if (!settings.enable_birthday_message) return;
+  const sendEmailEnabled = settings.enable_birthday_message && settings.enable_birthday_email;
+  const sendWhatsappEnabled = settings.enable_birthday_message && settings.enable_birthday_whatsapp;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const today = new Date();
   const day = today.getUTCDate();
@@ -314,7 +426,7 @@ async function processBirthdayEmails({ gym, settings }) {
 
     try {
       let subject = settings.email_subject_birthday;
-      if (member.email) {
+      if (sendEmailEnabled && member.email) {
         subject = await sendMemberEmail({
           gym,
           member,
@@ -329,24 +441,26 @@ async function processBirthdayEmails({ gym, settings }) {
         member_id: member.id,
         type: 'birthday_email',
         message: subject,
-        status: member.email ? 'sent' : 'skipped',
+        status: sendEmailEnabled && member.email ? 'sent' : 'skipped',
       });
 
-      try {
-        await sendMemberWhatsapp({
-          gym,
-          member,
-          body: settings.email_body_birthday || settings.message_birthday,
-          type: 'birthday_whatsapp',
-        });
-      } catch (whatsappErr) {
-        await logGymNotification({
-          gym_id: gym.id,
-          member_id: member.id,
-          type: 'birthday_whatsapp',
-          message: whatsappErr?.message || 'Failed to send birthday WhatsApp',
-          status: 'failed',
-        });
+      if (sendWhatsappEnabled) {
+        try {
+          await sendMemberWhatsapp({
+            gym,
+            member,
+            body: settings.whatsapp_body_birthday || settings.message_birthday,
+            type: 'birthday_whatsapp',
+          });
+        } catch (whatsappErr) {
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: 'birthday_whatsapp',
+            message: whatsappErr?.message || 'Failed to send birthday WhatsApp',
+            status: 'failed',
+          });
+        }
       }
     } catch (err) {
       const message = err?.message || 'Failed to send birthday email';
@@ -379,8 +493,10 @@ async function processBirthdayEmails({ gym, settings }) {
 async function processGym(gym, now) {
   if (!gym.email_notifications_enabled) return;
   const settings = await getOrCreateReminderSettings(gym.id);
+  if (!shouldRunMemberMessages(now, settings)) return;
 
   await processExpiringReminderEmails({ gym, settings });
+  await processExpiredReminderMessages({ gym, settings });
   await processInactiveReminderEmails({ gym, settings });
   await processBirthdayEmails({ gym, settings });
 }

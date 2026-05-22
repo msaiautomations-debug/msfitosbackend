@@ -39,13 +39,30 @@ const updateReminderSettings = async (req, res) => {
       reminder_7_days_before: pickInt(req.body.reminder_7_days_before, existing.reminder_7_days_before),
       expiry_email_delay_days: pickInt(req.body.expiry_email_delay_days, existing.expiry_email_delay_days),
       enable_expiry_email: pickBoolean(req.body.enable_expiry_email, existing.enable_expiry_email),
+      enable_expiry_whatsapp: pickBoolean(req.body.enable_expiry_whatsapp, existing.enable_expiry_whatsapp),
       enable_owner_daily_summary_email: pickBoolean(
         req.body.enable_owner_daily_summary_email,
         existing.enable_owner_daily_summary_email,
       ),
+      enable_owner_daily_summary_whatsapp: pickBoolean(
+        req.body.enable_owner_daily_summary_whatsapp,
+        existing.enable_owner_daily_summary_whatsapp,
+      ),
       enable_7_day_reminder: pickBoolean(req.body.enable_7_day_reminder, existing.enable_7_day_reminder),
+      enable_7_day_reminder_email: pickBoolean(
+        req.body.enable_7_day_reminder_email,
+        existing.enable_7_day_reminder_email,
+      ),
+      enable_7_day_reminder_whatsapp: pickBoolean(
+        req.body.enable_7_day_reminder_whatsapp,
+        existing.enable_7_day_reminder_whatsapp,
+      ),
       enable_birthday_message: pickBoolean(req.body.enable_birthday_message, existing.enable_birthday_message),
+      enable_birthday_email: pickBoolean(req.body.enable_birthday_email, existing.enable_birthday_email),
+      enable_birthday_whatsapp: pickBoolean(req.body.enable_birthday_whatsapp, existing.enable_birthday_whatsapp),
       enable_inactive_reminder: pickBoolean(req.body.enable_inactive_reminder, existing.enable_inactive_reminder),
+      enable_inactive_email: pickBoolean(req.body.enable_inactive_email, existing.enable_inactive_email),
+      enable_inactive_whatsapp: pickBoolean(req.body.enable_inactive_whatsapp, existing.enable_inactive_whatsapp),
       inactive_days_threshold: pickInt(req.body.inactive_days_threshold, existing.inactive_days_threshold),
       member_email_send_hour: pickInt(req.body.member_email_send_hour, existing.member_email_send_hour),
       member_email_send_minute: pickInt(req.body.member_email_send_minute, existing.member_email_send_minute),
@@ -57,6 +74,10 @@ const updateReminderSettings = async (req, res) => {
       email_body_birthday: pickString(req.body.email_body_birthday, existing.email_body_birthday),
       email_subject_inactive: pickString(req.body.email_subject_inactive, existing.email_subject_inactive),
       email_body_inactive: pickString(req.body.email_body_inactive, existing.email_body_inactive),
+      whatsapp_body_expiring: pickString(req.body.whatsapp_body_expiring, existing.whatsapp_body_expiring),
+      whatsapp_body_expired: pickString(req.body.whatsapp_body_expired, existing.whatsapp_body_expired),
+      whatsapp_body_birthday: pickString(req.body.whatsapp_body_birthday, existing.whatsapp_body_birthday),
+      whatsapp_body_inactive: pickString(req.body.whatsapp_body_inactive, existing.whatsapp_body_inactive),
     };
 
     if (next.reminder_7_days_before < 0) {
@@ -82,7 +103,11 @@ const updateReminderSettings = async (req, res) => {
       next.email_subject_birthday.length > 250 ||
       next.email_body_birthday.length > 4000 ||
       next.email_subject_inactive.length > 250 ||
-      next.email_body_inactive.length > 4000;
+      next.email_body_inactive.length > 4000 ||
+      next.whatsapp_body_expiring.length > 1000 ||
+      next.whatsapp_body_expired.length > 1000 ||
+      next.whatsapp_body_birthday.length > 1000 ||
+      next.whatsapp_body_inactive.length > 1000;
     if (tooLong) return res.status(400).json({ error: "One or more templates are too long" });
 
     const settings = await prisma.reminder_settings.update({
