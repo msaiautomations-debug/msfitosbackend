@@ -1,11 +1,19 @@
 const express = require('express');
 const { authenticate } = require('../middlewares/auth');
 const { subscriptionRequired } = require('../middlewares/subscription');
-const { getGymSettings, updateGymSettings, uploadGymLogo } = require('../controllers/gymSettingsController');
+const {
+  getGymSettings,
+  updateGymSettings,
+  updateGymPassword,
+  uploadGymLogo,
+} = require('../controllers/gymSettingsController');
 
 const router = express.Router();
 
 router.use(authenticate);
+
+router.put('/password', updateGymPassword);
+
 router.use(subscriptionRequired);
 
 router.get('/', getGymSettings);

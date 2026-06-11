@@ -1,3 +1,4 @@
+const bcrypt = require('bcrypt');
 const prisma = require('../utils/prisma');
 
 const MAX_LOGO_BYTES = 200 * 1024;
@@ -114,6 +115,43 @@ const updateGymSettings = async (req, res) => {
   });
 };
 
+const updateGymPassword = async (req, res) => {
+  const currentPassword = String(req.body?.current_password ?? req.body?.currentPassword ?? '').trim();
+  const newPassword = String(req.body?.new_password ?? req.body?.newPassword ?? req.body?.password ?? '').trim();
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: 'New password must be different from current password' });
+  }
+
+  const gym = await prisma.gyms.findUnique({
+    where: { id: req.gym_id },
+    select: { id: true, password_hash: true },
+  });
+
+  if (!gym) return res.status(404).json({ error: 'Gym not found' });
+
+  const matchesCurrentPassword = await bcrypt.compare(currentPassword, gym.password_hash);
+  if (!matchesCurrentPassword) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await prisma.gyms.update({
+    where: { id: gym.id },
+    data: { password_hash: passwordHash },
+  });
+
+  res.json({ message: 'Password updated successfully' });
+};
+
 const uploadGymLogo = async (req, res) => {
   const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
   const extension = getFileExtension(contentType);
@@ -191,5 +229,6 @@ const uploadGymLogo = async (req, res) => {
 module.exports = {
   getGymSettings,
   updateGymSettings,
+  updateGymPassword,
   uploadGymLogo,
 };

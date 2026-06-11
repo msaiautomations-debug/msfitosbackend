@@ -33,6 +33,15 @@ async function sendSignupOtpEmail(email, otpCode) {
   });
 }
 
+async function sendPasswordResetOtpEmail(email, otpCode) {
+  await sendEmail({
+    to: email,
+    subject: 'Reset your MS FitOS gym owner password',
+    text: `Your password reset OTP is ${otpCode}. This OTP will expire in 10 minutes. If you did not request this, you can ignore this email.`,
+    html: `<p>Your MS FitOS password reset OTP is: <strong>${otpCode}</strong></p><p>This OTP will expire in 10 minutes.</p><p>If you did not request this, you can ignore this email.</p>`,
+  });
+}
+
 const register = async (req, res) => {
   try {
     const { gym_name, owner_name, password, phone } = req.body;
@@ -447,4 +456,163 @@ const verifyOtp = async (req, res) => {
   }
 };
 
-module.exports = { register, login, registerGym, gymLogin, verifyOtp };
+const requestGymPasswordReset = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const gym = await prisma.gyms.findFirst({
+      where: {
+        email: {
+          equals: email,
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true, email: true },
+    });
+
+    if (!gym) {
+      return res.status(404).json({ error: 'No gym account found for this email' });
+    }
+
+    const otp = generateOtp();
+    await prisma.gyms.update({
+      where: { id: gym.id },
+      data: {
+        otp_code: otp,
+        otp_expires_at: buildOtpExpiry(),
+      },
+    });
+
+    await sendPasswordResetOtpEmail(gym.email, otp);
+    res.json({ message: 'Password reset OTP sent to your registered email' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Server error',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+const verifyGymPasswordResetOtp = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const otp = String(req.body?.otp || '').trim();
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const gym = await prisma.gyms.findFirst({
+      where: {
+        email: {
+          equals: email,
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true, otp_code: true, otp_expires_at: true },
+    });
+
+    if (!gym) {
+      return res.status(404).json({ error: 'Gym not found' });
+    }
+
+    if (!gym.otp_code || !gym.otp_expires_at) {
+      return res.status(400).json({ error: 'No reset OTP found. Please request a new OTP.' });
+    }
+
+    if (new Date() > gym.otp_expires_at) {
+      return res.status(400).json({ error: 'OTP has expired. Please request a new OTP.' });
+    }
+
+    if (gym.otp_code !== otp) {
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    res.json({ message: 'OTP verified' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Server error',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+const resetGymPassword = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const otp = String(req.body?.otp || '').trim();
+    const newPassword = String(req.body?.new_password ?? req.body?.newPassword ?? req.body?.password ?? '').trim();
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: 'Email, OTP, and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
+    const gym = await prisma.gyms.findFirst({
+      where: {
+        email: {
+          equals: email,
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true, password_hash: true, otp_code: true, otp_expires_at: true },
+    });
+
+    if (!gym) {
+      return res.status(404).json({ error: 'Gym not found' });
+    }
+
+    if (!gym.otp_code || !gym.otp_expires_at) {
+      return res.status(400).json({ error: 'No reset OTP found. Please request a new OTP.' });
+    }
+
+    if (new Date() > gym.otp_expires_at) {
+      return res.status(400).json({ error: 'OTP has expired. Please request a new OTP.' });
+    }
+
+    if (gym.otp_code !== otp) {
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    const sameAsOldPassword = await bcrypt.compare(newPassword, gym.password_hash);
+    if (sameAsOldPassword) {
+      return res.status(400).json({ error: 'New password must be different from your old password' });
+    }
+
+    const password_hash = await bcrypt.hash(newPassword, 10);
+    await prisma.gyms.update({
+      where: { id: gym.id },
+      data: {
+        password_hash,
+        otp_code: null,
+        otp_expires_at: null,
+      },
+    });
+
+    res.json({ message: 'Password reset successfully. You can now log in with your new password.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Server error',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+module.exports = {
+  register,
+  login,
+  registerGym,
+  gymLogin,
+  verifyOtp,
+  requestGymPasswordReset,
+  verifyGymPasswordResetOtp,
+  resetGymPassword,
+};
