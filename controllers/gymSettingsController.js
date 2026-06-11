@@ -68,15 +68,27 @@ const getGymSettings = async (req, res) => {
 };
 
 const updateGymSettings = async (req, res) => {
+  const gymName = req.body?.gym_name === undefined ? undefined : String(req.body.gym_name || '').trim();
+  const gymCode = req.body?.gym_id === undefined ? undefined : String(req.body.gym_id || '').trim();
+  const ownerName = req.body?.owner_name === undefined ? undefined : String(req.body.owner_name || '').trim();
+  const phone = req.body?.phone === undefined ? undefined : String(req.body.phone || '').trim();
   const logoUrl = normalizePublicImageUrl(req.body?.logo_url);
 
   if (req.body?.logo_url && !logoUrl) {
     return res.status(400).json({ error: 'Valid public image URL is required' });
   }
 
+  const updateData = {
+    ...(gymName !== undefined ? { gym_name: gymName } : {}),
+    ...(gymCode !== undefined ? { gym_id: gymCode } : {}),
+    ...(ownerName !== undefined ? { owner_name: ownerName } : {}),
+    ...(phone !== undefined ? { phone } : {}),
+    ...(req.body?.logo_url !== undefined ? { logo_url: logoUrl } : {}),
+  };
+
   const gym = await prisma.gyms.update({
     where: { id: req.gym_id },
-    data: { logo_url: logoUrl },
+    data: updateData,
     select: {
       id: true,
       gym_id: true,
