@@ -5,8 +5,6 @@ const path = require('path');
 const rootDir = path.resolve(__dirname, '..');
 const schemaPath = path.join(rootDir, 'prisma', 'schema.prisma');
 const generatedClientPath = path.join(rootDir, 'node_modules', '.prisma', 'client', 'index.js');
-const puppeteerCachePath = path.join(rootDir, '.cache', 'puppeteer');
-const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 const maxAttempts = 5;
 
 function sleep(ms) {
@@ -61,54 +59,6 @@ function runPrismaGenerate() {
   });
 }
 
-function runPuppeteerChromeInstall() {
-  return new Promise((resolve, reject) => {
-    let puppeteerCli;
-    try {
-      puppeteerCli = require.resolve('puppeteer/lib/cjs/puppeteer/node/cli.js', { paths: [rootDir] });
-    } catch (error) {
-      reject(error);
-      return;
-    }
-
-    const child = spawn(process.execPath, [puppeteerCli, 'browsers', 'install', 'chrome'], {
-      cwd: rootDir,
-      env: {
-        ...process.env,
-        PUPPETEER_CACHE_DIR: process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
-    });
-
-    let combinedOutput = '';
-
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      combinedOutput += text;
-      process.stdout.write(text);
-    });
-
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      combinedOutput += text;
-      process.stderr.write(text);
-    });
-
-    child.on('error', reject);
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      const error = new Error(combinedOutput || `puppeteer browsers install chrome exited with code ${code}`);
-      error.code = code;
-      reject(error);
-    });
-  });
-}
-
 async function main() {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -137,15 +87,6 @@ async function main() {
       await sleep(attempt * 1500);
     }
   }
-
-  if (process.env.PUPPETEER_INSTALL_CHROME !== 'true') {
-    console.log('Skipping Puppeteer Chrome install. Set PUPPETEER_INSTALL_CHROME=true to enable WhatsApp Web browser install.');
-    return;
-  }
-
-  await runPuppeteerChromeInstall();
-  ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath);
-  console.log('Puppeteer Chrome installed successfully.');
 }
 
 main().catch((error) => {

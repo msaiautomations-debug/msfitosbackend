@@ -1,139 +1,49 @@
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
-const puppeteerCachePath = path.join(__dirname, '..', '.cache', 'puppeteer');
-process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath;
-
+const pino = require('pino');
 const qrcode = require('qrcode');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const { ensureChromeExecutable } = require('../utils/puppeteerChrome');
 
 const clients = new Map();
-const authDataPath = process.env.WHATSAPP_WEB_AUTH_DATA_PATH || path.join(__dirname, '..', '.wwebjs_auth');
-const minWhatsappMemoryMb = Number(process.env.WHATSAPP_WEB_MIN_MEMORY_MB || 768);
-const whatsappInitTimeoutMs = Number(process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000);
-const whatsappStartupStaleMs = Number(
-  process.env.WHATSAPP_WEB_STARTUP_STALE_MS || Math.max(whatsappInitTimeoutMs * 2, 5 * 60 * 1000),
+const authDataPath =
+  process.env.BAILEYS_AUTH_DATA_PATH ||
+  process.env.WHATSAPP_BAILEYS_AUTH_DATA_PATH ||
+  path.join(__dirname, '..', '.baileys_auth');
+const whatsappInitTimeoutMs = Number(
+  process.env.BAILEYS_INIT_TIMEOUT_MS || process.env.WHATSAPP_WEB_INIT_TIMEOUT_MS || 120000,
 );
-const sharedWhatsappClientId = safeClientId(process.env.WHATSAPP_WEB_CLIENT_ID || 'msfitos-shared');
-const autoRestoreSavedSession = process.env.WHATSAPP_WEB_AUTO_RESTORE !== 'false';
+const whatsappStartupStaleMs = Number(
+  process.env.BAILEYS_STARTUP_STALE_MS || Math.max(whatsappInitTimeoutMs * 2, 5 * 60 * 1000),
+);
+const reconnectDelayMs = Number(process.env.BAILEYS_RECONNECT_DELAY_MS || 5000);
+const autoRestoreSavedSession = process.env.BAILEYS_AUTO_RESTORE !== 'false';
+const adminWhatsappClientId = safeClientId(process.env.BAILEYS_ADMIN_CLIENT_ID || 'admin-shared');
+const logger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
 
-function getPuppeteerConfig() {
-  const executablePath = ensureChromeExecutable(process.env.PUPPETEER_CACHE_DIR || puppeteerCachePath)
-    || process.env.PUPPETEER_EXECUTABLE_PATH
-    || process.env.CHROME_BIN
-    || undefined;
-  return {
-    ...(executablePath ? { executablePath } : {}),
-    headless: true,
-    protocolTimeout: whatsappInitTimeoutMs,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-background-timer-throttling',
-      '--disable-breakpad',
-      '--disable-crash-reporter',
-      '--disable-dbus',
-      '--disable-features=AudioServiceOutOfProcess,MediaRouter,OptimizationHints',
-      '--disable-renderer-backgrounding',
-      '--disable-software-rasterizer',
-      '--disable-sync',
-      '--metrics-recording-only',
-      '--mute-audio',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-    ],
-  };
-}
+let baileysModulePromise = null;
 
-function readFirstExistingFile(paths) {
-  for (const filePath of paths) {
-    try {
-      if (fs.existsSync(filePath)) return fs.readFileSync(filePath, 'utf8').trim();
-    } catch {
-      // ignore unavailable cgroup files
-    }
+function loadBaileys() {
+  if (!baileysModulePromise) {
+    baileysModulePromise = import('@whiskeysockets/baileys');
   }
-  return '';
-}
-
-function getContainerMemoryLimitMb() {
-  const raw = readFirstExistingFile(['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']);
-  if (!raw || raw === 'max') return null;
-  const bytes = Number(raw);
-  if (!Number.isFinite(bytes) || bytes <= 0) return null;
-
-  const mb = Math.floor(bytes / 1024 / 1024);
-  if (mb > 1024 * 1024) return null;
-  return mb;
-}
-
-function getWhatsAppStartupBlockReason() {
-  if (process.env.WHATSAPP_WEB_ENABLED === 'false') {
-    return 'WhatsApp Web is disabled on this server. Set WHATSAPP_WEB_ENABLED=true to enable it.';
-  }
-
-  if (process.env.WHATSAPP_WEB_FORCE_START === 'true') return null;
-
-  const memoryLimitMb = getContainerMemoryLimitMb();
-  if (memoryLimitMb && memoryLimitMb < minWhatsappMemoryMb) {
-    return `WhatsApp Web needs at least ${minWhatsappMemoryMb}MB memory to launch Chrome safely. This server has about ${memoryLimitMb}MB. Upgrade the Render instance or set WHATSAPP_WEB_FORCE_START=true if you accept crash risk.`;
-  }
-
-  return null;
+  return baileysModulePromise;
 }
 
 function safeClientId(gymId) {
   return String(gymId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function getWhatsappSessionKey() {
-  return sharedWhatsappClientId;
+function getWhatsappSessionKey(gymId) {
+  return gymId ? safeClientId(gymId) : adminWhatsappClientId;
 }
 
-function getSharedSessionPath() {
-  return path.join(authDataPath, `session-${sharedWhatsappClientId}`);
+function getSessionPath(gymId) {
+  return path.join(authDataPath, `session-${getWhatsappSessionKey(gymId)}`);
 }
 
-function getSavedSessionDirs() {
-  try {
-    if (!fs.existsSync(authDataPath)) return [];
-    return fs
-      .readdirSync(authDataPath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('session-'))
-      .map((entry) => {
-        const sessionPath = path.join(authDataPath, entry.name);
-        const stats = fs.statSync(sessionPath);
-        return { name: entry.name, path: sessionPath, mtimeMs: stats.mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  } catch {
-    return [];
-  }
-}
-
-function hasSavedAuthSession() {
-  return getSavedSessionDirs().length > 0;
-}
-
-function ensureSharedSessionFromSavedAuth() {
-  const sharedSessionPath = getSharedSessionPath();
-  if (fs.existsSync(sharedSessionPath) || process.env.WHATSAPP_WEB_ADOPT_LEGACY_SESSION === 'false') return;
-
-  const legacySession = getSavedSessionDirs().find((session) => session.path !== sharedSessionPath);
-  if (!legacySession) return;
-
-  try {
-    fs.cpSync(legacySession.path, sharedSessionPath, { recursive: true });
-    console.info(`Adopted WhatsApp auth session ${legacySession.name} as session-${sharedWhatsappClientId}`);
-  } catch (error) {
-    console.warn(`Could not adopt WhatsApp auth session ${legacySession.name}: ${error?.message || error}`);
-  }
+function hasSavedAuthSession(gymId) {
+  const sessionPath = getSessionPath(gymId);
+  return fs.existsSync(path.join(sessionPath, 'creds.json')) || fs.existsSync(sessionPath);
 }
 
 function createState(gymId) {
@@ -144,8 +54,9 @@ function createState(gymId) {
     phone: null,
     message: null,
     updatedAt: new Date().toISOString(),
-    client: null,
+    sock: null,
     startPromise: null,
+    reconnectTimer: null,
   };
 }
 
@@ -156,6 +67,8 @@ function serializeState(state) {
     phone: state.phone,
     message: state.message,
     updated_at: state.updatedAt,
+    saved: hasSavedAuthSession(state.gymId),
+    provider: 'baileys',
   };
 }
 
@@ -164,7 +77,7 @@ function touch(state, patch) {
 }
 
 function isStartupStatus(status) {
-  return ['initializing', 'authenticated', 'qr'].includes(status);
+  return ['initializing', 'qr', 'starting'].includes(status);
 }
 
 function isStartupStale(state) {
@@ -173,63 +86,117 @@ function isStartupStale(state) {
   return Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs > whatsappStartupStaleMs;
 }
 
-async function destroyClientSafely(client) {
-  if (!client) return;
+function getState(gymId) {
+  const key = getWhatsappSessionKey(gymId);
+  if (!clients.has(key)) clients.set(key, createState(gymId || null));
+  return clients.get(key);
+}
+
+function clearReconnectTimer(state) {
+  if (!state.reconnectTimer) return;
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+
+async function destroySocketSafely(sock) {
+  if (!sock) return;
   try {
-    await client.destroy();
+    sock.ev?.removeAllListeners?.('connection.update');
+    sock.ev?.removeAllListeners?.('creds.update');
+  } catch {
+    // best effort cleanup
+  }
+
+  try {
+    sock.ws?.close?.();
+  } catch {
+    // best effort cleanup
+  }
+
+  try {
+    sock.end?.(new Error('Socket closed by MS FitOS'));
   } catch {
     // best effort cleanup
   }
 }
 
-function getState(gymId) {
-  const key = getWhatsappSessionKey(gymId);
-  if (!clients.has(key)) clients.set(key, createState('shared'));
-  return clients.get(key);
+function getDisconnectCode(error) {
+  return error?.output?.statusCode || error?.statusCode || error?.data?.statusCode || null;
 }
 
-function waitForWhatsappStartup(client, state) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
+function getDisconnectMessage(error) {
+  return error?.output?.payload?.message || error?.message || 'WhatsApp disconnected';
+}
 
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
+function shouldReconnectAfterClose({ error, DisconnectReason }) {
+  const code = getDisconnectCode(error);
+  return code !== DisconnectReason?.loggedOut;
+}
 
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    };
+function getConnectedPhone(sock) {
+  const raw =
+    sock?.user?.id ||
+    sock?.user?.jid ||
+    sock?.authState?.creds?.me?.id ||
+    sock?.authState?.creds?.me?.jid ||
+    '';
+  return String(raw).split(':')[0].split('@')[0] || null;
+}
 
-    const timer = setTimeout(() => {
-      fail(new Error(`WhatsApp startup timed out after ${Math.round(whatsappInitTimeoutMs / 1000)} seconds. Chrome is likely blocked or too slow on this host.`));
-    }, whatsappInitTimeoutMs);
+function scheduleReconnect(state) {
+  if (!autoRestoreSavedSession || !hasSavedAuthSession(state.gymId) || state.reconnectTimer) return;
 
-    client.once('qr', () => finish('qr'));
-    client.once('ready', () => finish('ready'));
-    client.once('auth_failure', (message) => fail(new Error(message || 'WhatsApp authentication failed')));
-    client.once('disconnected', (reason) => fail(new Error(reason || 'WhatsApp disconnected during startup')));
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null;
+    startClient(state.gymId).catch((error) => {
+      touch(state, {
+        status: 'error',
+        qr: null,
+        message: error?.message || 'Failed to restore WhatsApp session',
+      });
+      state.sock = null;
+      state.startPromise = null;
+    });
+  }, reconnectDelayMs);
+}
 
-    client.initialize().catch(fail);
+async function createSocket(state) {
+  const {
+    Browsers,
+    DisconnectReason,
+    default: makeWASocket,
+    useMultiFileAuthState,
+  } = await loadBaileys();
+
+  const sessionPath = getSessionPath(state.gymId);
+  fs.mkdirSync(sessionPath, { recursive: true });
+
+  const { state: authState, saveCreds } = await useMultiFileAuthState(sessionPath);
+  const sock = makeWASocket({
+    auth: authState,
+    browser: Browsers.ubuntu('MS FitOS'),
+    logger,
+    markOnlineOnConnect: false,
+    printQRInTerminal: false,
+    syncFullHistory: false,
   });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  return { sock, DisconnectReason };
 }
 
 async function startClient(gymId) {
   const state = getState(gymId);
 
-  if (state.client && isStartupStale(state)) {
-    await destroyClientSafely(state.client);
-    state.client = null;
+  if (state.sock && isStartupStale(state)) {
+    await destroySocketSafely(state.sock);
+    state.sock = null;
     state.startPromise = null;
     touch(state, { status: 'idle', qr: null, message: 'Restarting stale WhatsApp session' });
   }
 
-  if (state.client && ['initializing', 'qr', 'ready', 'authenticated'].includes(state.status)) {
+  if (state.sock && ['initializing', 'starting', 'qr', 'ready'].includes(state.status)) {
     return serializeState(state);
   }
 
@@ -238,80 +205,108 @@ async function startClient(gymId) {
     return serializeState(state);
   }
 
-  const blockReason = getWhatsAppStartupBlockReason();
-  if (blockReason) {
-    touch(state, { status: 'error', qr: null, message: blockReason });
-    return serializeState(state);
-  }
-
-  ensureSharedSessionFromSavedAuth();
-
-  const client = new Client({
-    authStrategy: new LocalAuth({
-      clientId: sharedWhatsappClientId,
-      dataPath: authDataPath,
-    }),
-    puppeteer: getPuppeteerConfig(),
-  });
-
-  state.client = client;
+  clearReconnectTimer(state);
   touch(state, { status: 'initializing', qr: null, message: 'Starting WhatsApp session' });
 
-  client.on('qr', async (qr) => {
-    try {
-      const dataUrl = await qrcode.toDataURL(qr, { margin: 1, width: 320 });
-      touch(state, { status: 'qr', qr: dataUrl, message: 'Scan the QR code from WhatsApp linked devices' });
-    } catch (error) {
-      touch(state, { status: 'error', message: error?.message || 'Failed to generate QR code' });
-    }
-  });
+  state.startPromise = (async () => {
+    const { sock, DisconnectReason } = await createSocket(state);
+    state.sock = sock;
 
-  client.on('loading_screen', (percent, message) => {
-    if (state.status === 'ready') {
-      touch(state, {
-        qr: null,
-        message: `WhatsApp is reconnecting ${percent || 0}%${message ? ` - ${message}` : ''}`,
+    const startupPromise = new Promise((resolve, reject) => {
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      };
+
+      const timer = setTimeout(() => {
+        fail(new Error(`WhatsApp startup timed out after ${Math.round(whatsappInitTimeoutMs / 1000)} seconds.`));
+      }, whatsappInitTimeoutMs);
+
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          try {
+            const dataUrl = await qrcode.toDataURL(qr, { margin: 1, width: 320 });
+            touch(state, {
+              status: 'qr',
+              qr: dataUrl,
+              message: 'Scan this QR from WhatsApp linked devices',
+            });
+            finish();
+          } catch (error) {
+            touch(state, { status: 'error', message: error?.message || 'Failed to generate QR code' });
+            fail(error);
+          }
+        }
+
+        if (connection === 'connecting') {
+          touch(state, { status: 'initializing', qr: null, message: 'Connecting to WhatsApp' });
+        }
+
+        if (connection === 'open') {
+          touch(state, {
+            status: 'ready',
+            qr: null,
+            phone: getConnectedPhone(sock),
+            message: 'WhatsApp is ready',
+          });
+          finish();
+        }
+
+        if (connection === 'close') {
+          const error = lastDisconnect?.error;
+          const shouldReconnect = shouldReconnectAfterClose({ error, DisconnectReason });
+          state.sock = null;
+
+          if (!shouldReconnect) {
+            touch(state, {
+              status: 'logged_out',
+              qr: null,
+              phone: null,
+              message: 'WhatsApp was logged out from the phone. Please connect again.',
+            });
+            fail(new Error('WhatsApp was logged out. Please scan the QR code again.'));
+            return;
+          }
+
+          touch(state, {
+            status: 'disconnected',
+            qr: null,
+            message: `${getDisconnectMessage(error)}. Reconnecting saved session...`,
+          });
+          scheduleReconnect(state);
+          fail(new Error(getDisconnectMessage(error)));
+        }
       });
-      return;
-    }
-
-    touch(state, {
-      status: 'initializing',
-      qr: null,
-      message: `Loading WhatsApp Web ${percent || 0}%${message ? ` - ${message}` : ''}`,
     });
-  });
 
-  client.on('authenticated', () => {
-    touch(state, { status: 'authenticated', qr: null, message: 'WhatsApp authenticated' });
-  });
-
-  client.on('ready', () => {
-    const phone = client.info?.wid?.user || client.info?.me?.user || null;
-    touch(state, { status: 'ready', qr: null, phone, message: 'WhatsApp is ready' });
-  });
-
-  client.on('disconnected', (reason) => {
-    touch(state, { status: 'disconnected', qr: null, message: reason || 'WhatsApp disconnected' });
-    state.client = null;
-    state.startPromise = null;
-    destroyClientSafely(client).catch(() => undefined);
-  });
-
-  client.on('auth_failure', (message) => {
-    touch(state, { status: 'auth_failure', qr: null, message: message || 'WhatsApp authentication failed' });
-    state.client = null;
-    state.startPromise = null;
-    destroyClientSafely(client).catch(() => undefined);
-  });
+    try {
+      await startupPromise;
+    } catch (error) {
+      throw error;
+    }
+  })();
 
   try {
-    state.startPromise = waitForWhatsappStartup(client, state);
     await state.startPromise;
   } catch (error) {
-    touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to start WhatsApp' });
-    await destroyClientSafely(client);
-    state.client = null;
+    if (state.status !== 'qr' && state.status !== 'logged_out') {
+      touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to start WhatsApp' });
+      await destroySocketSafely(state.sock);
+      state.sock = null;
+    }
   } finally {
     state.startPromise = null;
   }
@@ -322,28 +317,29 @@ async function startClient(gymId) {
 async function getStatus(gymId) {
   const state = getState(gymId);
 
-  if (state.client && isStartupStale(state)) {
-    const staleMessage = state.status === 'qr'
-      ? 'WhatsApp QR expired. Starting a fresh QR session.'
-      : 'WhatsApp session was stuck while starting. Restarting it now.';
-    await destroyClientSafely(state.client);
-    state.client = null;
+  if (state.sock && isStartupStale(state)) {
+    const staleMessage =
+      state.status === 'qr'
+        ? 'WhatsApp QR expired. Starting a fresh QR session.'
+        : 'WhatsApp session was stuck while starting. Restarting it now.';
+    await destroySocketSafely(state.sock);
+    state.sock = null;
     state.startPromise = null;
     touch(state, { status: 'idle', qr: null, message: staleMessage });
   }
 
   const canRestore =
     autoRestoreSavedSession &&
-    !state.client &&
+    !state.sock &&
     !state.startPromise &&
     ['idle', 'disconnected', 'error'].includes(state.status) &&
-    hasSavedAuthSession();
+    hasSavedAuthSession(gymId);
 
   if (canRestore) {
     touch(state, { status: 'initializing', qr: null, message: 'Restoring saved WhatsApp session' });
     startClient(gymId).catch((error) => {
       touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to restore WhatsApp session' });
-      state.client = null;
+      state.sock = null;
       state.startPromise = null;
     });
   }
@@ -359,80 +355,127 @@ function normalizePhoneForWhatsapp(phone) {
   return digits;
 }
 
-async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
+async function ensureReadyClient(gymId) {
   const state = getState(gymId);
-  if (!state.client || state.status !== 'ready') {
-    if (autoRestoreSavedSession && hasSavedAuthSession()) {
-      await startClient(gymId);
-    }
+  if ((!state.sock || state.status !== 'ready') && autoRestoreSavedSession && hasSavedAuthSession(gymId)) {
+    await startClient(gymId);
   }
 
-  if (!state.client || state.status !== 'ready') {
-    throw new Error('WhatsApp is not connected. Open Admin WhatsApp and scan the QR code once.');
+  if (!state.sock || state.status !== 'ready') {
+    throw new Error('WhatsApp is not connected. Open Connect WhatsApp and scan the QR code once.');
   }
 
+  return state.sock;
+}
+
+function getUrlPathname(value) {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return value;
+  }
+}
+
+function getFileExtension(value) {
+  const pathname = getUrlPathname(String(value || '').trim()).toLowerCase();
+  const ext = path.extname(pathname).replace('.', '');
+  return ext;
+}
+
+function getFileName(value, fallback) {
+  const pathname = getUrlPathname(String(value || '').trim());
+  const name = path.basename(pathname);
+  return name && name !== '.' ? name : fallback;
+}
+
+function buildMediaMessage(mediaUrl, caption = '') {
+  const safeMediaUrl = String(mediaUrl || '').trim();
+  const safeCaption = String(caption || '').trim();
+  const extension = getFileExtension(safeMediaUrl);
+
+  if (['jpg', 'jpeg', 'png', 'webp'].includes(extension)) {
+    return { image: { url: safeMediaUrl }, caption: safeCaption };
+  }
+
+  if (['mp4', 'mov', 'm4v', 'webm'].includes(extension)) {
+    return { video: { url: safeMediaUrl }, caption: safeCaption };
+  }
+
+  if (extension === 'pdf') {
+    return {
+      document: { url: safeMediaUrl },
+      mimetype: 'application/pdf',
+      fileName: getFileName(safeMediaUrl, 'document.pdf'),
+      caption: safeCaption,
+    };
+  }
+
+  return {
+    document: { url: safeMediaUrl },
+    fileName: getFileName(safeMediaUrl, 'attachment'),
+    caption: safeCaption,
+  };
+}
+
+async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
+  const sock = await ensureReadyClient(gymId);
   const digits = normalizePhoneForWhatsapp(phone);
   if (!digits) throw new Error('Invalid WhatsApp phone number');
 
   const text = String(message || '').trim();
   if (!text) throw new Error('Message is empty');
 
-  const chatId = `${digits}@c.us`;
+  const jid = `${digits}@s.whatsapp.net`;
   const safeMediaUrl = String(mediaUrl || '').trim();
 
   if (safeMediaUrl) {
-    const media = await MessageMedia.fromUrl(safeMediaUrl, { unsafeMime: true });
-    await state.client.sendMessage(chatId, media, { caption: text });
+    await sock.sendMessage(jid, buildMediaMessage(safeMediaUrl, text));
     return { phone: digits };
   }
 
-  await state.client.sendMessage(chatId, text);
+  await sock.sendMessage(jid, { text });
   return { phone: digits };
 }
 
 async function sendWhatsappMedia({ gymId, phone, mediaUrl, caption = '' }) {
-  const state = getState(gymId);
-  if (!state.client || state.status !== 'ready') {
-    if (autoRestoreSavedSession && hasSavedAuthSession()) {
-      await startClient(gymId);
-    }
-  }
-
-  if (!state.client || state.status !== 'ready') {
-    throw new Error('WhatsApp is not connected. Open Admin WhatsApp and scan the QR code once.');
-  }
-
+  const sock = await ensureReadyClient(gymId);
   const digits = normalizePhoneForWhatsapp(phone);
   if (!digits) throw new Error('Invalid WhatsApp phone number');
 
   const safeMediaUrl = String(mediaUrl || '').trim();
   if (!safeMediaUrl) throw new Error('Media URL is required');
 
-  const chatId = `${digits}@c.us`;
-  const media = await MessageMedia.fromUrl(safeMediaUrl, { unsafeMime: true });
-  await state.client.sendMessage(chatId, media, { caption: String(caption || '').trim() });
+  const jid = `${digits}@s.whatsapp.net`;
+  await sock.sendMessage(jid, buildMediaMessage(safeMediaUrl, caption));
   return { phone: digits };
 }
 
 async function logoutClient(gymId) {
   const state = getState(gymId);
-  if (state.client) {
+  clearReconnectTimer(state);
+
+  if (state.sock) {
     try {
-      await state.client.logout();
+      await state.sock.logout();
     } catch (error) {
       if (process.env.NODE_ENV !== 'production') {
         console.warn('WhatsApp logout failed', error?.message || error);
       }
     }
-    try {
-      await state.client.destroy();
-    } catch {
-      // best effort cleanup
+    await destroySocketSafely(state.sock);
+  }
+
+  try {
+    fs.rmSync(getSessionPath(gymId), { recursive: true, force: true });
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('WhatsApp auth cleanup failed', error?.message || error);
     }
   }
 
   touch(state, { status: 'idle', qr: null, phone: null, message: 'Logged out' });
-  state.client = null;
+  state.sock = null;
+  state.startPromise = null;
   return serializeState(state);
 }
 
