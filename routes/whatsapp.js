@@ -5,6 +5,7 @@ const {
   getWhatsappStatus,
   startWhatsapp,
   logoutWhatsapp,
+  requestWhatsappPairingCode,
   sendTestWhatsapp,
   broadcastFitnessTip,
 } = require('../controllers/whatsappController');
@@ -17,6 +18,7 @@ router.use(subscriptionRequired);
 router.get('/status', getWhatsappStatus);
 router.post('/start', startWhatsapp);
 router.post('/logout', logoutWhatsapp);
+router.post('/pairing-code', requestWhatsappPairingCode);
 router.post('/test', sendTestWhatsapp);
 router.post('/fitness-tips/:id/broadcast', broadcastFitnessTip);
 

@@ -450,6 +450,191 @@ async function sendWhatsappMedia({ gymId, phone, mediaUrl, caption = '' }) {
   return { phone: digits };
 }
 
+async function requestPairingCode(gymId, phone) {
+  const digits = normalizePhoneForWhatsapp(phone);
+  if (!digits) throw new Error('Invalid phone number format. Use country code + phone number (e.g., 919876543210)');
+
+  const state = getState(gymId);
+
+  if (state.sock && isStartupStale(state)) {
+    await destroySocketSafely(state.sock);
+    state.sock = null;
+    state.startPromise = null;
+    touch(state, { status: 'idle', qr: null, message: 'Restarting stale WhatsApp session' });
+  }
+
+  if (state.sock && ['initializing', 'starting', 'pairing_code', 'ready'].includes(state.status)) {
+    const currentMessage = state.message || '';
+    if (state.status === 'pairing_code' && currentMessage.match(/\b\d{3,8}\b/)) {
+      return serializeState(state);
+    }
+  }
+
+  if (state.startPromise) {
+    await state.startPromise.catch(() => null);
+    return serializeState(state);
+  }
+
+  clearReconnectTimer(state);
+  touch(state, { status: 'initializing', qr: null, message: `Requesting pairing code for ${digits}` });
+
+  state.startPromise = (async () => {
+    const { sock, DisconnectReason } = await createSocket(state);
+    state.sock = sock;
+
+    const startupPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      let codeReceived = false;
+      let socketReady = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(requestTimer);
+        resolve();
+      };
+
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(requestTimer);
+        reject(error);
+      };
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('[WhatsApp] Pairing code request timeout (120s) - finishing with current state');
+          }
+          finish();
+        }
+      }, 120000); // 120s - give user time to scan and complete pairing
+
+      let requestTimer = null;
+
+      // Step 1: Wait for socket to be ready before requesting pairing code
+      sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[WhatsApp] connection.update:', connection, 'socketReady:', socketReady);
+        }
+
+        // When socket transitions to 'connecting', it's initializing WS handshake
+        // We need to give it a moment to complete, then request the code
+        if (connection === 'connecting' && !socketReady && !requestTimer) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('[WhatsApp] Socket entering connecting state - scheduling pairing code request');
+          }
+          
+          // Wait for socket WS to be ready (small delay allows handshake to complete)
+          requestTimer = setTimeout(async () => {
+            requestTimer = null;
+            if (settled) return;
+
+            // Step 2: Now request the pairing code with socket ready
+            try {
+              if (process.env.NODE_ENV !== 'production') {
+                console.log(`[WhatsApp] Requesting pairing code for: ${digits}`);
+              }
+              
+              const code = await sock.requestPairingCode(digits);
+              
+              if (process.env.NODE_ENV !== 'production') {
+                console.log('[WhatsApp] requestPairingCode returned:', code, `type: ${typeof code}`);
+              }
+
+              const codeStr = typeof code === 'string' ? code.trim() : null;
+
+              if (codeStr && codeStr.length >= 3 && !codeReceived) {
+                codeReceived = true;
+                if (process.env.NODE_ENV !== 'production') {
+                  console.log(`[WhatsApp] ✅ CODE RECEIVED:`, codeStr);
+                  console.log('[WhatsApp] Socket staying open - waiting for user to scan code on phone...');
+                }
+                touch(state, {
+                  status: 'pairing_code',
+                  qr: null,
+                  message: codeStr,
+                  phone: digits,
+                });
+                // ⚠️ DO NOT call finish() here!
+                // Socket must stay open so user can scan the code and complete pairing.
+                // finish() will be called when connection opens (success) or timeout expires.
+              } else {
+                if (process.env.NODE_ENV !== 'production') {
+                  console.log('[WhatsApp] requestPairingCode returned empty or invalid code:', code);
+                }
+              }
+            } catch (err) {
+              if (process.env.NODE_ENV !== 'production') {
+                console.error('[WhatsApp] requestPairingCode error:', err?.message);
+              }
+              // Don't fail - wait for timeout or connection success
+            }
+          }, 1500); // Wait 1.5s for socket to complete WS handshake
+        }
+
+        // If connection opens, user already scanned the code
+        if (connection === 'open') {
+          touch(state, {
+            status: 'ready',
+            qr: null,
+            phone: getConnectedPhone(sock),
+            message: 'WhatsApp is ready',
+          });
+          finish();
+        }
+
+        // Handle connection close
+        if (connection === 'close') {
+          const error = lastDisconnect?.error;
+          state.sock = null;
+
+          // If we already got a code, don't fail on socket close
+          // (user needs time to scan the code on their phone)
+          if (codeReceived) {
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('[WhatsApp] Socket closed after code received - waiting for user to scan...');
+            }
+            return;
+          }
+
+          // If socket closes before we got a code, fail
+          if (!settled) {
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('[WhatsApp] Socket closed before pairing code received');
+            }
+            fail(new Error(`${getDisconnectMessage(error)} - Failed to get pairing code`));
+          }
+        }
+      });
+    });
+
+    try {
+      await startupPromise;
+    } catch (error) {
+      throw error;
+    }
+  })();
+
+  try {
+    await state.startPromise;
+  } catch (error) {
+    if (state.status !== 'pairing_code' && state.status !== 'logged_out') {
+      touch(state, { status: 'error', qr: null, message: error?.message || 'Failed to get pairing code' });
+      await destroySocketSafely(state.sock);
+      state.sock = null;
+    }
+  } finally {
+    state.startPromise = null;
+  }
+
+  return serializeState(state);
+}
+
 async function logoutClient(gymId) {
   const state = getState(gymId);
   clearReconnectTimer(state);
@@ -483,6 +668,7 @@ module.exports = {
   getStatus,
   startClient,
   logoutClient,
+  requestPairingCode,
   sendWhatsappMessage,
   sendWhatsappMedia,
   normalizePhoneForWhatsapp,

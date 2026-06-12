@@ -3,6 +3,7 @@ const {
   getStatus,
   startClient,
   logoutClient,
+  requestPairingCode,
   sendWhatsappMessage,
 } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
@@ -20,6 +21,18 @@ const startWhatsapp = async (req, res) => {
 const logoutWhatsapp = async (req, res) => {
   const status = await logoutClient(req.gym_id);
   res.json(status);
+};
+
+const requestWhatsappPairingCode = async (req, res) => {
+  const phone = String(req.body?.phone || '').trim();
+  if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+
+  try {
+    const status = await requestPairingCode(req.gym_id, phone);
+    res.json(status);
+  } catch (error) {
+    res.status(400).json({ error: error?.message || 'Failed to request pairing code' });
+  }
 };
 
 const sendTestWhatsapp = async (req, res) => {
@@ -116,6 +129,7 @@ module.exports = {
   getWhatsappStatus,
   startWhatsapp,
   logoutWhatsapp,
+  requestWhatsappPairingCode,
   sendTestWhatsapp,
   broadcastFitnessTip,
 };
