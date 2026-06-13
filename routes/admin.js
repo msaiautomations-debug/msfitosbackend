@@ -12,6 +12,8 @@ const {
   uploadAdminDietPlan,
   removeAdminDietPlan,
   listGymBookings,
+  createGymForUser,
+  getUserGymsAdmin,
 } = require('../controllers/adminController');
 const { authenticateAdmin } = require('../middlewares/adminAuth');
 const { listWebsiteInquiriesAdmin } = require('../controllers/websiteInquiryController');
@@ -39,5 +41,7 @@ router.get('/website-inquiries', authenticateAdmin, listWebsiteInquiriesAdmin);
 router.get('/whatsapp/status', authenticateAdmin, getAdminWhatsappStatus);
 router.post('/whatsapp/start', authenticateAdmin, startAdminWhatsapp);
 router.post('/whatsapp/logout', authenticateAdmin, logoutAdminWhatsapp);
+router.get('/users/:userEmail/gyms', authenticateAdmin, getUserGymsAdmin);
+router.post('/users/:userEmail/gyms', authenticateAdmin, createGymForUser);
 
 module.exports = router;

@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
   engineType = "client"
 }
 
@@ -28,8 +28,9 @@ model gyms {
   subscription_status         String                @default("inactive")
   razorpay_key_id             String?
   razorpay_key_secret         String?
-  logo_url                    String?
   created_at                  DateTime              @default(now())
+  logo_url                    String?
+  owner_email                 String?
   attendances                 attendances[]
   email_notifications         email_notifications[]
   fitness_tips                fitness_tips[]
@@ -64,15 +65,11 @@ model members {
   email             String?
   dob               DateTime?
   plan_duration     Int
-  height_cm         Float?
-  weight_kg         Float?
-  bmi               Float?
   start_date        DateTime
   expiry_date       DateTime
   amount            Float
   payment_status    String?
   payment_method    String?
-  reminder_7_sent   Boolean             @default(false)
   expiry_notified   Boolean             @default(false)
   is_paused         Boolean             @default(false)
   paused_at         DateTime?
@@ -81,6 +78,13 @@ model members {
   inactive_since    DateTime?
   created_at        DateTime            @default(now())
   plan_id           String?
+  bmi               Float?
+  height_cm         Float?
+  weight_kg         Float?
+  reminder_1_sent   Boolean             @default(false)
+  reminder_2_sent   Boolean             @default(false)
+  reminder_3_sent   Boolean             @default(false)
+  reminder_4_sent   Boolean             @default(false)
   attendances       attendances[]
   gym_notifications gym_notifications[]
   gym               gyms                @relation(fields: [gym_id], references: [id])
@@ -131,10 +135,10 @@ model trainers {
   specialization   String?
   experience_years Int                @default(0)
   hourly_rate      Float?
-  salary_amount    Float?
-  salary_basis     String?
   status           String             @default("active")
   created_at       DateTime           @default(now())
+  salary_amount    Float?
+  salary_basis     String?
   attendances      attendances[]
   trainer_sessions trainer_sessions[]
   gym              gyms               @relation(fields: [gym_id], references: [id])
@@ -213,42 +217,45 @@ model membership_plans {
 }
 
 model reminder_settings {
-  id                               String   @id @default(uuid())
-  gym_id                           String   @unique
-  reminder_7_days_before           Int      @default(7)
-  expiry_email_delay_days          Int      @default(0)
-  enable_expiry_email              Boolean  @default(true)
-  enable_expiry_whatsapp           Boolean  @default(true)
-  enable_owner_daily_summary_email Boolean  @default(true)
-  enable_owner_daily_summary_whatsapp Boolean @default(true)
-  enable_7_day_reminder            Boolean  @default(true)
-  enable_7_day_reminder_email      Boolean  @default(true)
-  enable_7_day_reminder_whatsapp   Boolean  @default(true)
-  enable_birthday_message          Boolean  @default(true)
-  enable_birthday_email            Boolean  @default(true)
-  enable_birthday_whatsapp         Boolean  @default(true)
-  enable_inactive_reminder         Boolean  @default(false)
-  enable_inactive_email            Boolean  @default(false)
-  enable_inactive_whatsapp         Boolean  @default(false)
-  inactive_days_threshold          Int      @default(14)
-  member_email_send_hour           Int      @default(10)
-  member_email_send_minute         Int      @default(0)
-  email_subject_expiring           String   @default("Your membership at {gym_name} expires on {expiry_date}")
-  email_body_expiring              String   @default("Hi {member_name},\n\nThis is a reminder from {gym_name} that your membership will expire on {expiry_date}.\n\nAmount due: {amount_due}\n\nPlease renew before the expiry date to continue uninterrupted access.\n\nThanks,\n{gym_name}")
-  email_subject_expired            String   @default("Your membership at {gym_name} has expired")
-  email_body_expired               String   @default("Hi {member_name},\n\nYour membership at {gym_name} expired on {expiry_date}.\n\nAmount due: {amount_due}\n\nPlease renew to reactivate your access.\n\nThanks,\n{gym_name}")
-  message_birthday                 String   @default("Happy Birthday {{member_name}}! 🎉\nYour {{gym_name}} family wishes you a strong and healthy year ahead.")
-  email_subject_birthday           String   @default("Happy Birthday from {gym_name}!")
-  email_body_birthday              String   @default("Hi {member_name},\n\nHappy Birthday from everyone at {gym_name}.\n\nWishing you a strong, healthy, and successful year ahead.\n\nThanks,\n{gym_name}")
-  email_subject_inactive           String   @default("We miss you at {gym_name}")
-  email_body_inactive              String   @default("Hi {member_name},\n\nWe haven't seen you at {gym_name} recently.\n\nCome back this week and keep your progress going.\n\nThanks,\n{gym_name}")
-  whatsapp_body_expiring           String   @default("Hi {member_name}, your membership at {gym_name} will expire on {expiry_date}. Amount due: {amount_due}. Please renew before expiry.")
-  whatsapp_body_expired            String   @default("Hi {member_name}, your membership at {gym_name} expired on {expiry_date}. Amount due: {amount_due}. Please renew to reactivate your access.")
-  whatsapp_body_birthday           String   @default("Happy Birthday {member_name}! Everyone at {gym_name} wishes you a strong, healthy, and successful year ahead.")
-  whatsapp_body_inactive           String   @default("Hi {member_name}, we haven't seen you at {gym_name} recently. Come back this week and keep your progress going.")
-  created_at                       DateTime @default(now())
-  updated_at                       DateTime @updatedAt
-  gym                              gyms     @relation(fields: [gym_id], references: [id])
+  id                                  String   @id @default(uuid())
+  gym_id                              String   @unique
+  expiry_email_delay_days             Int      @default(0)
+  enable_expiry_email                 Boolean  @default(true)
+  enable_owner_daily_summary_email    Boolean  @default(true)
+  enable_birthday_message             Boolean  @default(true)
+  enable_inactive_reminder            Boolean  @default(false)
+  inactive_days_threshold             Int      @default(14)
+  member_email_send_hour              Int      @default(10)
+  member_email_send_minute            Int      @default(0)
+  email_subject_expiring              String   @default("Your membership at {gym_name} expires on {expiry_date}")
+  email_body_expiring                 String   @default("Hi {member_name},\n\nThis is a reminder from {gym_name} that your membership will expire on {expiry_date}.\n\nAmount due: {amount_due}\n\nPlease renew before the expiry date to continue uninterrupted access.\n\nThanks,\n{gym_name}")
+  email_subject_expired               String   @default("Your membership at {gym_name} has expired")
+  email_body_expired                  String   @default("Hi {member_name},\n\nYour membership at {gym_name} expired on {expiry_date}.\n\nAmount due: {amount_due}\n\nPlease renew to reactivate your access.\n\nThanks,\n{gym_name}")
+  message_birthday                    String   @default("Happy Birthday {{member_name}}! 🎉\nYour {{gym_name}} family wishes you a strong and healthy year ahead.")
+  email_subject_birthday              String   @default("Happy Birthday from {gym_name}!")
+  email_body_birthday                 String   @default("Hi {member_name},\n\nHappy Birthday from everyone at {gym_name}.\n\nWishing you a strong, healthy, and successful year ahead.\n\nThanks,\n{gym_name}")
+  email_subject_inactive              String   @default("We miss you at {gym_name}")
+  email_body_inactive                 String   @default("Hi {member_name},\n\nWe haven't seen you at {gym_name} recently.\n\nCome back this week and keep your progress going.\n\nThanks,\n{gym_name}")
+  created_at                          DateTime @default(now())
+  updated_at                          DateTime @updatedAt
+  enable_birthday_email               Boolean  @default(true)
+  enable_birthday_whatsapp            Boolean  @default(true)
+  enable_expiry_whatsapp              Boolean  @default(true)
+  enable_inactive_email               Boolean  @default(false)
+  enable_inactive_whatsapp            Boolean  @default(false)
+  enable_owner_daily_summary_whatsapp Boolean  @default(true)
+  whatsapp_body_birthday              String   @default("Happy Birthday {member_name}! Everyone at {gym_name} wishes you a strong, healthy, and successful year ahead.")
+  whatsapp_body_expired               String   @default("Hi {member_name}, your membership at {gym_name} expired on {expiry_date}. Amount due: {amount_due}. Please renew to reactivate your access.")
+  whatsapp_body_expiring              String   @default("Hi {member_name}, your membership at {gym_name} will expire on {expiry_date}. Amount due: {amount_due}. Please renew before expiry.")
+  whatsapp_body_inactive              String   @default("Hi {member_name}, we haven't seen you at {gym_name} recently. Come back this week and keep your progress going.")
+  enable_expiry_reminder              Boolean  @default(true)
+  enable_expiry_reminder_email        Boolean  @default(true)
+  enable_expiry_reminder_whatsapp     Boolean  @default(true)
+  reminder_1_days_before              Int      @default(3)
+  reminder_2_days_before              Int      @default(7)
+  reminder_3_days_before              Int      @default(14)
+  reminder_4_days_before              Int      @default(21)
+  gym                                 gyms     @relation(fields: [gym_id], references: [id])
 
   @@index([gym_id])
 }
@@ -308,9 +315,9 @@ model website_pricing_settings {
   id                     String   @id @default("default")
   tagline                String   @default("Affordable pricing designed for growing gyms")
   billing_toggle_enabled Boolean  @default(true)
-  diet_plan_pdf_url      String?
   created_at             DateTime @default(now())
   updated_at             DateTime @updatedAt
+  diet_plan_pdf_url      String?
 }
 
 model website_pricing_plans {

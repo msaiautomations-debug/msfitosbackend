@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 const prisma = require('../utils/prisma');
 const {
   addBillingCycle,
@@ -763,6 +764,140 @@ const removeAdminDietPlan = async (req, res) => {
   }
 };
 
+const createGymForUser = async (req, res) => {
+  try {
+    const { userEmail } = req.params;
+    const { gym_name, phone, password } = req.body;
+    const normalizedEmail = String(userEmail || '').trim().toLowerCase();
+
+    // Validate input
+    if (!normalizedEmail || !gym_name || !phone) {
+      return res.status(400).json({ error: 'User email, gym name, and phone are required' });
+    }
+
+    // Check if user exists (has at least 1 gym)
+    const existingGym = await prisma.gyms.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+    });
+
+    if (!existingGym) {
+      return res.status(404).json({ error: 'User not found. Create first gym via registration.' });
+    }
+
+    // Check if gym name already exists for this user
+    const duplicateGym = await prisma.gyms.findFirst({
+      where: {
+        AND: [
+          { email: { equals: normalizedEmail, mode: 'insensitive' } },
+          { gym_name: { equals: gym_name, mode: 'insensitive' } },
+        ],
+      },
+    });
+
+    if (duplicateGym) {
+      return res.status(409).json({ error: 'This gym name already exists for this user' });
+    }
+
+    // Create the new gym for the user
+    const password_hash = password ? await bcrypt.hash(password, 10) : await bcrypt.hash('DefaultGym123!', 10);
+    
+    // Generate unique gym_id
+    const sanitizedGymName = String(gym_name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const timestamp = Date.now().toString().slice(-6);
+    const gym_id = `${sanitizedGymName}_${timestamp}`;
+    
+    // Generate unique email for the gym (email field has @unique constraint)
+    const uniqueEmail = `${gym_id}@gym.local`;
+    
+    // Calculate trial end date (30 days from now)
+    const now = new Date();
+    const trial_end_date = new Date(now);
+    trial_end_date.setDate(trial_end_date.getDate() + 30);
+
+    const newGym = await prisma.gyms.create({
+      data: {
+        gym_id,
+        gym_name,
+        email: uniqueEmail,
+        owner_name: existingGym.owner_name,
+        owner_email: normalizedEmail,
+        phone,
+        password_hash,
+        trial_start_date: now,
+        trial_end_date,
+        subscription_status: 'active',
+        email_verified: true,
+        plan: 'admin-created',
+      },
+    });
+
+    // Create default subscription
+    await prisma.gym_subscriptions.create({
+      data: {
+        gym_id: newGym.id,
+        plan_name: 'admin-assigned',
+        status: 'active',
+        start_date: new Date(),
+        end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Gym "${gym_name}" created for user ${normalizedEmail}`,
+      gym: {
+        id: newGym.id,
+        gym_name: newGym.gym_name,
+        email: newGym.email,
+        phone: newGym.phone,
+        subscription_status: newGym.subscription_status,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Failed to create gym for user',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
+const getUserGymsAdmin = async (req, res) => {
+  try {
+    const { userEmail } = req.params;
+    const normalizedEmail = String(userEmail || '').trim().toLowerCase();
+
+    if (!normalizedEmail) {
+      return res.status(400).json({ error: 'User email is required' });
+    }
+
+    const gyms = await prisma.gyms.findMany({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      select: {
+        id: true,
+        gym_name: true,
+        email: true,
+        phone: true,
+        subscription_status: true,
+        created_at: true,
+      },
+      orderBy: { created_at: 'asc' },
+    });
+
+    res.json({
+      email: normalizedEmail,
+      gym_count: gyms.length,
+      gyms,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: 'Failed to fetch user gyms',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
+};
+
 module.exports = {
   adminLogin,
   listGyms,
@@ -776,4 +911,6 @@ module.exports = {
   uploadAdminDietPlan,
   removeAdminDietPlan,
   listGymBookings,
+  createGymForUser,
+  getUserGymsAdmin,
 };

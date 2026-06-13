@@ -36,7 +36,10 @@ const updateReminderSettings = async (req, res) => {
     const existing = await getOrCreateReminderSettings(gym_id);
 
     const next = {
-      reminder_7_days_before: pickInt(req.body.reminder_7_days_before, existing.reminder_7_days_before),
+      reminder_1_days_before: pickInt(req.body.reminder_1_days_before, existing.reminder_1_days_before),
+      reminder_2_days_before: pickInt(req.body.reminder_2_days_before, existing.reminder_2_days_before),
+      reminder_3_days_before: pickInt(req.body.reminder_3_days_before, existing.reminder_3_days_before),
+      reminder_4_days_before: pickInt(req.body.reminder_4_days_before, existing.reminder_4_days_before),
       expiry_email_delay_days: pickInt(req.body.expiry_email_delay_days, existing.expiry_email_delay_days),
       enable_expiry_email: pickBoolean(req.body.enable_expiry_email, existing.enable_expiry_email),
       enable_expiry_whatsapp: pickBoolean(req.body.enable_expiry_whatsapp, existing.enable_expiry_whatsapp),
@@ -48,14 +51,14 @@ const updateReminderSettings = async (req, res) => {
         req.body.enable_owner_daily_summary_whatsapp,
         existing.enable_owner_daily_summary_whatsapp,
       ),
-      enable_7_day_reminder: pickBoolean(req.body.enable_7_day_reminder, existing.enable_7_day_reminder),
-      enable_7_day_reminder_email: pickBoolean(
-        req.body.enable_7_day_reminder_email,
-        existing.enable_7_day_reminder_email,
+      enable_expiry_reminder: pickBoolean(req.body.enable_expiry_reminder, existing.enable_expiry_reminder),
+      enable_expiry_reminder_email: pickBoolean(
+        req.body.enable_expiry_reminder_email,
+        existing.enable_expiry_reminder_email,
       ),
-      enable_7_day_reminder_whatsapp: pickBoolean(
-        req.body.enable_7_day_reminder_whatsapp,
-        existing.enable_7_day_reminder_whatsapp,
+      enable_expiry_reminder_whatsapp: pickBoolean(
+        req.body.enable_expiry_reminder_whatsapp,
+        existing.enable_expiry_reminder_whatsapp,
       ),
       enable_birthday_message: pickBoolean(req.body.enable_birthday_message, existing.enable_birthday_message),
       enable_birthday_email: pickBoolean(req.body.enable_birthday_email, existing.enable_birthday_email),
@@ -80,7 +83,7 @@ const updateReminderSettings = async (req, res) => {
       whatsapp_body_inactive: pickString(req.body.whatsapp_body_inactive, existing.whatsapp_body_inactive),
     };
 
-    if (next.reminder_7_days_before < 0) {
+    if (next.reminder_1_days_before < 0 || next.reminder_2_days_before < 0 || next.reminder_3_days_before < 0 || next.reminder_4_days_before < 0) {
       return res.status(400).json({ error: "Reminder days cannot be negative" });
     }
     if (next.expiry_email_delay_days < 0) {

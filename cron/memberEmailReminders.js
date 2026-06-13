@@ -93,104 +93,113 @@ function shouldRunMemberMessages(now, settings) {
 }
 
 async function processExpiringReminderEmails({ gym, settings }) {
-  const sendEmailEnabled = settings.enable_7_day_reminder && settings.enable_7_day_reminder_email;
-  const sendWhatsappEnabled = settings.enable_7_day_reminder && settings.enable_7_day_reminder_whatsapp;
+  const sendEmailEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_email;
+  const sendWhatsappEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_whatsapp;
   if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
-  const target = addDays(new Date(), Number(settings.reminder_7_days_before || 0));
-  const { start, end } = dayWindowUtc(target);
+  const reminders = [
+    { index: 1, days: settings.reminder_1_days_before },
+    { index: 2, days: settings.reminder_2_days_before },
+    { index: 3, days: settings.reminder_3_days_before },
+    { index: 4, days: settings.reminder_4_days_before },
+  ];
 
-  const members = await prisma.members.findMany({
-    where: {
-      gym_id: gym.id,
-      is_inactive: false,
-      expiry_date: { gte: start, lte: end },
-      reminder_7_sent: false,
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      phone: true,
-      expiry_date: true,
-      amount: true,
-    },
-  });
+  for (const reminder of reminders) {
+    const target = addDays(new Date(), Number(reminder.days || 0));
+    const { start, end } = dayWindowUtc(target);
 
-  for (const member of members) {
-    let delivered = false;
+    const members = await prisma.members.findMany({
+      where: {
+        gym_id: gym.id,
+        is_inactive: false,
+        expiry_date: { gte: start, lte: end },
+        [`reminder_${reminder.index}_sent`]: false,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        expiry_date: true,
+        amount: true,
+      },
+    });
 
-    try {
-      let subject = settings.email_subject_expiring;
-      if (sendEmailEnabled && member.email) {
-        subject = await sendMemberEmail({
-          gym,
-          member,
-          subject: settings.email_subject_expiring,
-          body: settings.email_body_expiring,
-          type: 'member_expiring_email',
-        });
-        delivered = true;
-      }
+    for (const member of members) {
+      let delivered = false;
 
-      if (sendWhatsappEnabled) {
-        try {
-          await sendMemberWhatsapp({
+      try {
+        let subject = settings.email_subject_expiring;
+        if (sendEmailEnabled && member.email) {
+          subject = await sendMemberEmail({
             gym,
             member,
-            body: settings.whatsapp_body_expiring,
-            type: 'member_expiring_whatsapp',
+            subject: settings.email_subject_expiring,
+            body: settings.email_body_expiring,
+            type: `member_expiring_email_reminder_${reminder.index}`,
           });
           delivered = true;
-        } catch (whatsappErr) {
-          await logGymNotification({
-            gym_id: gym.id,
-            member_id: member.id,
-            type: 'member_expiring_whatsapp',
-            message: whatsappErr?.message || 'Failed to send expiring reminder WhatsApp',
-            status: 'failed',
-          });
         }
-      }
 
-      if (!delivered) continue;
+        if (sendWhatsappEnabled) {
+          try {
+            await sendMemberWhatsapp({
+              gym,
+              member,
+              body: settings.whatsapp_body_expiring,
+              type: `member_expiring_whatsapp_reminder_${reminder.index}`,
+            });
+            delivered = true;
+          } catch (whatsappErr) {
+            await logGymNotification({
+              gym_id: gym.id,
+              member_id: member.id,
+              type: `member_expiring_whatsapp_reminder_${reminder.index}`,
+              message: whatsappErr?.message || 'Failed to send expiring reminder WhatsApp',
+              status: 'failed',
+            });
+          }
+        }
 
-      await prisma.members.update({
-        where: { id: member.id },
-        data: { reminder_7_sent: true },
-      });
+        if (!delivered) continue;
 
-      await logGymNotification({
-        gym_id: gym.id,
-        member_id: member.id,
-        type: 'member_expiring_email',
-        message: subject,
-        status: 'sent',
-      });
-    } catch (err) {
-      const message = err?.message || 'Failed to send expiring reminder email';
-      console.error('Expiring reminder email failed', gym.id, member.id, message);
-      await prisma.email_notifications.create({
-        data: {
+        await prisma.members.update({
+          where: { id: member.id },
+          data: { [`reminder_${reminder.index}_sent`]: true },
+        });
+
+        await logGymNotification({
           gym_id: gym.id,
-          type: 'member_expiring_email',
-          status: 'failed',
-          subject: settings.email_subject_expiring,
-          error_message: message,
-          payload: {
-            member_id: member.id,
-            member_name: member.name,
-            email: member.email || null,
+          member_id: member.id,
+          type: `member_expiring_email_reminder_${reminder.index}`,
+          message: subject,
+          status: 'sent',
+        });
+      } catch (err) {
+        const message = err?.message || 'Failed to send expiring reminder email';
+        console.error('Expiring reminder email failed', gym.id, member.id, message);
+        await prisma.email_notifications.create({
+          data: {
+            gym_id: gym.id,
+            type: `member_expiring_email_reminder_${reminder.index}`,
+            status: 'failed',
+            subject: settings.email_subject_expiring,
+            error_message: message,
+            payload: {
+              member_id: member.id,
+              member_name: member.name,
+              email: member.email || null,
+            },
           },
-        },
-      });
-      await logGymNotification({
-        gym_id: gym.id,
-        member_id: member.id,
-        type: 'member_expiring_email',
-        message,
-        status: 'failed',
-      });
+        });
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: `member_expiring_email_reminder_${reminder.index}`,
+          message,
+          status: 'failed',
+        });
+      }
     }
   }
 }
