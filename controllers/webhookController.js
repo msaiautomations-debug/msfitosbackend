@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const prisma = require('../utils/prisma');
+const { sendRenewalConfirmationMessages } = require('./membersController');
 
 function getMembershipExpiryFromStart(startDate, planDurationDays) {
   const date = new Date(startDate);
@@ -43,6 +44,8 @@ const handleRazorpay = async (req, res) => {
       }
       if (!gymId && entity?.notes?.gym_id) gymId = entity.notes.gym_id;
 
+      let renewedMemberForNotification = null;
+
       await prisma.$transaction(async (tx) => {
         if (paymentEntry) {
           // update existing payment record with captured id
@@ -66,7 +69,26 @@ const handleRazorpay = async (req, res) => {
             } else {
               new_expiry = getMembershipExpiryFromStart(new Date(), plan_duration);
             }
-            await tx.members.update({ where: { id: memberId }, data: { expiry_date: new_expiry, payment_status: 'paid', reminder_7_sent: false } });
+            renewedMemberForNotification = await tx.members.update({
+              where: { id: memberId },
+              data: {
+                expiry_date: new_expiry,
+                payment_status: 'paid',
+                reminder_1_sent: false,
+                reminder_2_sent: false,
+                reminder_3_sent: false,
+                reminder_4_sent: false,
+                expiry_notified: false,
+              },
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+                expiry_date: true,
+                amount: true,
+              },
+            });
           }
         } else if (gymId) {
           // Gym subscription payment - activate subscription
@@ -84,6 +106,15 @@ const handleRazorpay = async (req, res) => {
           }
         }
       });
+
+      if (gymId && renewedMemberForNotification) {
+        await sendRenewalConfirmationMessages({
+          gym_id: gymId,
+          member: renewedMemberForNotification,
+        }).catch((error) => {
+          console.error('Renewal confirmation failed after Razorpay payment', error?.message || error);
+        });
+      }
 
       return res.status(200).send('ok');
     }

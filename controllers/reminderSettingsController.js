@@ -66,6 +66,8 @@ const updateReminderSettings = async (req, res) => {
       enable_inactive_reminder: pickBoolean(req.body.enable_inactive_reminder, existing.enable_inactive_reminder),
       enable_inactive_email: pickBoolean(req.body.enable_inactive_email, existing.enable_inactive_email),
       enable_inactive_whatsapp: pickBoolean(req.body.enable_inactive_whatsapp, existing.enable_inactive_whatsapp),
+      enable_renewal_email: pickBoolean(req.body.enable_renewal_email, existing.enable_renewal_email),
+      enable_renewal_whatsapp: pickBoolean(req.body.enable_renewal_whatsapp, existing.enable_renewal_whatsapp),
       inactive_days_threshold: pickInt(req.body.inactive_days_threshold, existing.inactive_days_threshold),
       member_email_send_hour: pickInt(req.body.member_email_send_hour, existing.member_email_send_hour),
       member_email_send_minute: pickInt(req.body.member_email_send_minute, existing.member_email_send_minute),
@@ -77,10 +79,13 @@ const updateReminderSettings = async (req, res) => {
       email_body_birthday: pickString(req.body.email_body_birthday, existing.email_body_birthday),
       email_subject_inactive: pickString(req.body.email_subject_inactive, existing.email_subject_inactive),
       email_body_inactive: pickString(req.body.email_body_inactive, existing.email_body_inactive),
+      email_subject_renewal: pickString(req.body.email_subject_renewal, existing.email_subject_renewal),
+      email_body_renewal: pickString(req.body.email_body_renewal, existing.email_body_renewal),
       whatsapp_body_expiring: pickString(req.body.whatsapp_body_expiring, existing.whatsapp_body_expiring),
       whatsapp_body_expired: pickString(req.body.whatsapp_body_expired, existing.whatsapp_body_expired),
       whatsapp_body_birthday: pickString(req.body.whatsapp_body_birthday, existing.whatsapp_body_birthday),
       whatsapp_body_inactive: pickString(req.body.whatsapp_body_inactive, existing.whatsapp_body_inactive),
+      whatsapp_body_renewal: pickString(req.body.whatsapp_body_renewal, existing.whatsapp_body_renewal),
     };
 
     if (next.reminder_1_days_before < 0 || next.reminder_2_days_before < 0 || next.reminder_3_days_before < 0 || next.reminder_4_days_before < 0) {
@@ -107,10 +112,13 @@ const updateReminderSettings = async (req, res) => {
       next.email_body_birthday.length > 4000 ||
       next.email_subject_inactive.length > 250 ||
       next.email_body_inactive.length > 4000 ||
+      next.email_subject_renewal.length > 250 ||
+      next.email_body_renewal.length > 4000 ||
       next.whatsapp_body_expiring.length > 1000 ||
       next.whatsapp_body_expired.length > 1000 ||
       next.whatsapp_body_birthday.length > 1000 ||
-      next.whatsapp_body_inactive.length > 1000;
+      next.whatsapp_body_inactive.length > 1000 ||
+      next.whatsapp_body_renewal.length > 1000;
     if (tooLong) return res.status(400).json({ error: "One or more templates are too long" });
 
     const settings = await prisma.reminder_settings.update({

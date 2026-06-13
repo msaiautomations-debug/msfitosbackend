@@ -193,6 +193,133 @@ function buildPendingPaymentWhatsapp({ gymName, memberName, amountDue, customMes
   ].join('\n');
 }
 
+const DEFAULT_RENEWAL_EMAIL_SUBJECT = 'Your membership at {gym_name} has been renewed';
+const DEFAULT_RENEWAL_EMAIL_BODY =
+  'Hi {member_name},\n\nYour membership at {gym_name} has been renewed successfully.\n\nNew expiry: {expiry_date}\nAmount paid: {amount_due}\n\nThanks,\n{gym_name}';
+const DEFAULT_RENEWAL_WHATSAPP_BODY =
+  'Hi {member_name}, your membership at {gym_name} has been renewed successfully. New expiry: {expiry_date}. Amount paid: {amount_due}. Thank you.';
+
+async function sendRenewalConfirmationMessages({ gym_id, member }) {
+  const [gym, settings] = await Promise.all([
+    prisma.gyms.findUnique({
+      where: { id: gym_id },
+      select: { id: true, gym_name: true, logo_url: true },
+    }),
+    getOrCreateReminderSettings(gym_id),
+  ]);
+
+  if (!gym) return { email: { skipped: true, reason: 'missing-gym' }, whatsapp: { skipped: true, reason: 'missing-gym' } };
+
+  const result = {
+    email: { skipped: true, reason: 'disabled' },
+    whatsapp: { skipped: true, reason: 'disabled' },
+  };
+
+  if (settings.enable_renewal_email !== false) {
+    const email = normalizeEmail(member.email);
+
+    if (!email) {
+      result.email = { skipped: true, reason: 'missing-email' };
+    } else {
+      const template = {
+        subject: settings.email_subject_renewal || DEFAULT_RENEWAL_EMAIL_SUBJECT,
+        body: settings.email_body_renewal || DEFAULT_RENEWAL_EMAIL_BODY,
+      };
+      const rendered = renderMembershipEmail({
+        template,
+        member,
+        gymName: gym.gym_name,
+      });
+
+      try {
+        await sendEmail({
+          to: email,
+          subject: rendered.subject,
+          html: rendered.html,
+          text: rendered.text,
+        });
+
+        await prisma.email_notifications.create({
+          data: {
+            gym_id,
+            type: 'renewal_confirmation_email',
+            status: 'sent',
+            subject: rendered.subject,
+            payload: {
+              member_id: member.id,
+              member_name: member.name,
+              email,
+              expiry_date: member.expiry_date?.toISOString?.() || null,
+              amount_paid: member.amount,
+            },
+          },
+        });
+
+        result.email = { sent: true };
+      } catch (error) {
+        const message = error?.message || 'Failed to send renewal confirmation email';
+        await prisma.email_notifications.create({
+          data: {
+            gym_id,
+            type: 'renewal_confirmation_email',
+            status: 'failed',
+            subject: rendered.subject,
+            error_message: message,
+            payload: {
+              member_id: member.id,
+              member_name: member.name,
+              email,
+              expiry_date: member.expiry_date?.toISOString?.() || null,
+              amount_paid: member.amount,
+            },
+          },
+        });
+
+        result.email = { sent: false, reason: message };
+      }
+    }
+  }
+
+  if (settings.enable_renewal_whatsapp !== false) {
+    const phone = String(member.phone || '').trim();
+
+    if (!phone) {
+      result.whatsapp = { skipped: true, reason: 'missing-phone' };
+    } else {
+      const message = renderWhatsappTemplate(settings.whatsapp_body_renewal || DEFAULT_RENEWAL_WHATSAPP_BODY, {
+        member,
+        gymName: gym.gym_name,
+      });
+
+      try {
+        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym.logo_url });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'renewal_confirmation_whatsapp',
+          message,
+          status: 'sent',
+        });
+
+        result.whatsapp = { sent: true };
+      } catch (error) {
+        const failureMessage = error?.message || 'Failed to send renewal confirmation WhatsApp';
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'renewal_confirmation_whatsapp',
+          message: failureMessage,
+          status: 'failed',
+        });
+
+        result.whatsapp = { sent: false, reason: failureMessage };
+      }
+    }
+  }
+
+  return result;
+}
+
 function formatCurrencyForMessage(amount) {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
@@ -873,7 +1000,11 @@ const restoreMember = async (req, res) => {
           inactive_since: null,
           is_paused: false,
           paused_at: null,
-          reminder_7_sent: false,
+          reminder_1_sent: false,
+          reminder_2_sent: false,
+          reminder_3_sent: false,
+          reminder_4_sent: false,
+          expiry_notified: false,
         },
         include: {
           membership_plan: true,
@@ -1743,7 +1874,7 @@ const manualRenew = async (req, res) => {
       new_expiry = getMembershipExpiryFromStart(today, plan_duration);
     }
 
-    await prisma.$transaction([
+    const [renewedMember] = await prisma.$transaction([
       prisma.members.update({
         where: { id },
         data: {
@@ -1752,10 +1883,22 @@ const manualRenew = async (req, res) => {
           plan_duration: parseInt(plan_duration, 10),
           plan_id: safePlanId,
           amount: parseFloat(amount || 0),
-          reminder_7_sent: false,
+          reminder_1_sent: false,
+          reminder_2_sent: false,
+          reminder_3_sent: false,
+          reminder_4_sent: false,
+          expiry_notified: false,
           is_inactive: false,
           inactive_since: null,
           payment_status: 'paid',
+        },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          expiry_date: true,
+          amount: true,
         },
       }),
       prisma.payments.create({
@@ -1768,8 +1911,16 @@ const manualRenew = async (req, res) => {
       }),
     ]);
 
+    const renewal_notifications = await sendRenewalConfirmationMessages({
+      gym_id,
+      member: renewedMember,
+    }).catch((error) => ({
+      email: { sent: false, reason: error?.message || 'Failed to send renewal confirmation email' },
+      whatsapp: { sent: false, reason: error?.message || 'Failed to send renewal confirmation WhatsApp' },
+    }));
+
     invalidateDashboardCache(gym_id);
-    res.json({ message: 'Renewed', expiry: new_expiry, start_date: renewalStart });
+    res.json({ message: 'Renewed', expiry: new_expiry, start_date: renewalStart, renewal_notifications });
   } catch (err) {
     console.error(err);
     res.status(500).json({
@@ -1792,6 +1943,7 @@ module.exports = {
   sendPendingPaymentWhatsapps,
   sendMembershipStatusEmails,
   sendMembershipStatusWhatsapps,
+  sendRenewalConfirmationMessages,
   manualRenew,
   deactivateMember,
   activateMember,
