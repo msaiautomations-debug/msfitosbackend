@@ -1342,19 +1342,67 @@ const listMembershipStatusMembers = async (req, res) => {
   try {
     const gym_id = req.gym_id;
     const type = String(req.query.type || '').trim().toLowerCase();
-    const q = String(req.query.q || '');
+    const q = String(req.query.q || '').trim();
 
     if (!['expiring', 'expired'].includes(type)) {
       return res.status(400).json({ error: 'Valid membership status type is required' });
     }
 
-    const members = await prisma.members.findMany({
-      where: buildMembershipStatusWhere(gym_id, type, q),
-      orderBy: [{ expiry_date: 'asc' }, { created_at: 'desc' }],
-      include: {
-        membership_plan: true,
-      },
-    });
+    const now = new Date();
+    const end = new Date();
+    end.setUTCDate(end.getUTCDate() + 7);
+    end.setUTCHours(23, 59, 59, 999);
+    const searchPattern = `%${q}%`;
+    const loweredSearchPattern = `%${q.toLowerCase()}%`;
+    const statusSql =
+      type === 'expired'
+        ? Prisma.sql`AND m.expiry_date < ${now}`
+        : Prisma.sql`AND m.expiry_date >= ${now} AND m.expiry_date <= ${end}`;
+    const searchSql = q
+      ? Prisma.sql`
+          AND (
+            m.name ILIKE ${searchPattern}
+            OR m.phone LIKE ${searchPattern}
+            OR LOWER(COALESCE(m.email, '')) LIKE ${loweredSearchPattern}
+          )
+        `
+      : Prisma.sql``;
+
+    const rows = await prisma.$queryRaw`
+      SELECT
+        m.id,
+        m.name,
+        m.phone,
+        m.email,
+        m.dob,
+        m.plan_duration,
+        m.height_cm,
+        m.weight_kg,
+        m.bmi,
+        m.start_date,
+        m.expiry_date,
+        m.amount,
+        m.payment_status,
+        m.payment_method,
+        m.is_paused,
+        m.paused_at,
+        m.is_inactive,
+        m.inactive_since,
+        m.created_at,
+        m.plan_id,
+        mp.id AS membership_plan_id,
+        mp.name AS membership_plan_name,
+        mp.duration_days AS membership_plan_duration_days
+      FROM public.members m
+      LEFT JOIN public.membership_plans mp ON mp.id = m.plan_id
+      WHERE m.gym_id = ${gym_id}
+        AND m.is_inactive = false
+        ${statusSql}
+        ${searchSql}
+      ORDER BY m.expiry_date ASC, m.created_at DESC
+    `;
+
+    const members = rows.map(buildMemberListItem);
 
     res.json({ members });
   } catch (err) {

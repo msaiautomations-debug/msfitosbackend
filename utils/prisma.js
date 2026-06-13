@@ -1,34 +1,8 @@
 const { PrismaClient } = require('@prisma/client');
-const { PrismaPg } = require('@prisma/adapter-pg');
-const { Pool } = require('pg');
 const { setPrismaUnavailableReason } = require('./runtimeState');
 
 const globalForPrisma = globalThis;
 const connectionString = process.env.DATABASE_URL;
-
-function buildPoolConfig(rawConnectionString) {
-  const poolConfig = { connectionString: rawConnectionString };
-
-  try {
-    const parsedUrl = new URL(rawConnectionString);
-    const host = parsedUrl.hostname || '';
-    const sslMode = (parsedUrl.searchParams.get('sslmode') || '').toLowerCase();
-    const isLocalHost = ['localhost', '127.0.0.1', '::1'].includes(host);
-    const shouldUseSsl =
-      ['require', 'prefer', 'verify-ca', 'verify-full', 'allow'].includes(sslMode) ||
-      (!sslMode && host && !isLocalHost);
-
-    if (shouldUseSsl) {
-      poolConfig.ssl = {
-        rejectUnauthorized: sslMode === 'verify-full' || sslMode === 'verify-ca',
-      };
-    }
-  } catch (error) {
-    console.warn('Failed to parse DATABASE_URL for Prisma pool configuration:', error.message);
-  }
-
-  return poolConfig;
-}
 
 function createUnavailablePrisma(reason) {
   const unavailableError = () => {
@@ -67,8 +41,6 @@ function createUnavailablePrisma(reason) {
   );
 }
 
-let prismaPool = globalForPrisma.prismaPool;
-let prismaAdapter = globalForPrisma.prismaAdapter;
 let prisma = globalForPrisma.prisma;
 
 if (!connectionString) {
@@ -78,10 +50,7 @@ if (!connectionString) {
   prisma = prisma || createUnavailablePrisma(reason);
 } else if (!prisma) {
   try {
-    prismaPool = prismaPool || new Pool(buildPoolConfig(connectionString));
-    prismaAdapter = prismaAdapter || new PrismaPg(prismaPool);
     prisma = new PrismaClient({
-      adapter: prismaAdapter,
       log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
     });
     setPrismaUnavailableReason(null);
@@ -94,11 +63,9 @@ if (!connectionString) {
 }
 
 if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prismaPool = prismaPool;
-  globalForPrisma.prismaAdapter = prismaAdapter;
   globalForPrisma.prisma = prisma;
 }
 
-prisma.pool = prismaPool;
+prisma.pool = null;
 
 module.exports = prisma;
