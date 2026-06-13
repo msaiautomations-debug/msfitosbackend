@@ -51,7 +51,7 @@ const register = async (req, res) => {
       return res.status(400).json({ error: 'Required fields missing' });
     }
 
-    // check uniqueness
+    // check uniqueness with gyms
     const existing = await prisma.gyms.findFirst({
       where: {
         email: {
@@ -61,7 +61,15 @@ const register = async (req, res) => {
       },
     });
     if (existing) {
-      return res.status(409).json({ error: 'Email already registered' });
+      return res.status(409).json({ error: 'This email already exists. Enter a new email' });
+    }
+
+    // check if email is already used by an owner
+    const existingOwner = await prisma.owners.findUnique({
+      where: { email },
+    });
+    if (existingOwner) {
+      return res.status(409).json({ error: 'This email already exists. Enter a new email' });
     }
 
     const password_hash = await bcrypt.hash(password, 10);

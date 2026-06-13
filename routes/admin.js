@@ -16,6 +16,7 @@ const {
   getUserGymsAdmin,
 } = require('../controllers/adminController');
 const { authenticateAdmin } = require('../middlewares/adminAuth');
+const { listOwners, createOwner, getOwnerDetail, assignGymToOwner, removeGymFromOwner, listAvailableGyms } = require('../controllers/ownerAdminController');
 const { listWebsiteInquiriesAdmin } = require('../controllers/websiteInquiryController');
 const {
   getAdminWhatsappStatus,
@@ -43,5 +44,11 @@ router.post('/whatsapp/start', authenticateAdmin, startAdminWhatsapp);
 router.post('/whatsapp/logout', authenticateAdmin, logoutAdminWhatsapp);
 router.get('/users/:userEmail/gyms', authenticateAdmin, getUserGymsAdmin);
 router.post('/users/:userEmail/gyms', authenticateAdmin, createGymForUser);
+router.get('/owners', authenticateAdmin, listOwners);
+router.post('/owners', authenticateAdmin, createOwner);
+router.get('/owners/:ownerId', authenticateAdmin, getOwnerDetail);
+router.post('/owners/:ownerId/gyms', authenticateAdmin, assignGymToOwner);
+router.delete('/owners/:ownerId/gyms/:gymId', authenticateAdmin, removeGymFromOwner);
+router.get('/owners/:ownerId/available-gyms', authenticateAdmin, listAvailableGyms);
 
 module.exports = router;

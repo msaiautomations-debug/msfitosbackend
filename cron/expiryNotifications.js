@@ -4,6 +4,7 @@ const { sendEmail } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 const { sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
+const { processAllOwnerSummaries } = require('../services/ownerSummaryService');
 
 const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 5 * * *';
 let isRunning = false;
@@ -298,6 +299,13 @@ async function runOnce() {
 
   for (const gym of gyms) {
     await processGym(gym, now);
+  }
+
+  // Process owner daily summaries
+  try {
+    await processAllOwnerSummaries(now);
+  } catch (err) {
+    console.error('Owner summary processing failed:', err?.message);
   }
 }
 

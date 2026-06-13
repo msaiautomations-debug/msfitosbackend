@@ -26,6 +26,7 @@ const gymSettingsRoutes = require('./routes/gymSettings');
 const websitePricingRoutes = require('./routes/websitePricing');
 const websiteInquiryRoutes = require('./routes/websiteInquiries');
 const userRoutes = require('./routes/user');
+const ownerDashboardRoutes = require('./routes/ownerDashboard');
 const expiryNotifications = require('./cron/expiryNotifications');
 const memberEmailReminders = require('./cron/memberEmailReminders');
 const prisma = require('./utils/prisma');
@@ -172,6 +173,7 @@ app.use('/api/gym-settings', gymSettingsRoutes);
 app.use('/api/website-pricing', websitePricingRoutes);
 app.use('/api/website-inquiries', websiteInquiryRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/owner', ownerDashboardRoutes);
 
 app.get('/api/ping', (req, res) => {
   res.json({

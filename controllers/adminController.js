@@ -309,7 +309,15 @@ const updateGym = async (req, res) => {
         },
       });
       if (duplicateEmail) {
-        return res.status(409).json({ error: 'Email is already in use' });
+        return res.status(409).json({ error: 'This email already exists. Enter a new email' });
+      }
+
+      // Also check if email is used by an owner
+      const ownerWithEmail = await prisma.owners.findUnique({
+        where: { email },
+      });
+      if (ownerWithEmail) {
+        return res.status(409).json({ error: 'This email already exists. Enter a new email' });
       }
     }
 
