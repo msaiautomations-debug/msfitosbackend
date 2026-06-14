@@ -311,6 +311,7 @@ model fitness_tips {
 model trial_users {
   id                 String   @id @default(uuid())
   gym_id             String
+  lead_type          String   @default("trial")
   name               String
   phone              String
   trial_date         DateTime
