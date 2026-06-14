@@ -1,10 +1,10 @@
 const cron = require('node-cron');
 const prisma = require('../utils/prisma');
-const { sendEmail } = require('../services/emailService');
+const { sendEmail, getEmailConfigIssues } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 const { renderMembershipEmail } = require('../services/membershipEmailService');
 const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
-const { sendWhatsappMessage } = require('../services/whatsappService');
+const { getStatus, sendWhatsappMessage } = require('../services/whatsappService');
 
 const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 let isRunning = false;
@@ -92,9 +92,33 @@ function shouldRunMemberMessages(now, settings) {
   return now.getHours() === hour && now.getMinutes() === minute;
 }
 
-async function processExpiringReminderEmails({ gym, settings }) {
-  const sendEmailEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_email;
-  const sendWhatsappEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_whatsapp;
+async function getDeliveryAvailability(gym) {
+  const emailConfigIssues = getEmailConfigIssues();
+  let whatsappReady = false;
+
+  try {
+    const status = await getStatus(gym.id);
+    whatsappReady = status.status === 'ready';
+  } catch (error) {
+    console.warn('WhatsApp reminder channel unavailable for gym', gym.id, error?.message || error);
+  }
+
+  if (emailConfigIssues.length) {
+    console.warn('Email reminder channel unavailable:', emailConfigIssues.join(', '));
+  }
+  if (!whatsappReady) {
+    console.warn('WhatsApp reminder channel skipped because the session is not ready for gym', gym.id);
+  }
+
+  return {
+    emailConfigured: emailConfigIssues.length === 0,
+    whatsappReady,
+  };
+}
+
+async function processExpiringReminderEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_whatsapp && delivery.whatsappReady;
   if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const reminders = [
@@ -204,8 +228,10 @@ async function processExpiringReminderEmails({ gym, settings }) {
   }
 }
 
-async function processExpiredReminderMessages({ gym, settings }) {
-  if (!settings.enable_expiry_email && !settings.enable_expiry_whatsapp) return;
+async function processExpiredReminderMessages({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_expiry_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_expiry_whatsapp && delivery.whatsappReady;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const target = addDays(new Date(), -Number(settings.expiry_email_delay_days || 0));
   const { start, end } = dayWindowUtc(target);
@@ -232,7 +258,7 @@ async function processExpiredReminderMessages({ gym, settings }) {
 
     try {
       let subject = settings.email_subject_expired;
-      if (settings.enable_expiry_email && member.email) {
+      if (sendEmailEnabled && member.email) {
         subject = await sendMemberEmail({
           gym,
           member,
@@ -243,7 +269,7 @@ async function processExpiredReminderMessages({ gym, settings }) {
         delivered = true;
       }
 
-      if (settings.enable_expiry_whatsapp) {
+      if (sendWhatsappEnabled) {
         try {
           await sendMemberWhatsapp({
             gym,
@@ -270,7 +296,7 @@ async function processExpiredReminderMessages({ gym, settings }) {
         data: { expiry_notified: true },
       });
 
-      if (settings.enable_expiry_email) {
+      if (sendEmailEnabled) {
         await logGymNotification({
           gym_id: gym.id,
           member_id: member.id,
@@ -300,9 +326,9 @@ async function processExpiredReminderMessages({ gym, settings }) {
   }
 }
 
-async function processInactiveReminderEmails({ gym, settings }) {
-  const sendEmailEnabled = settings.enable_inactive_reminder && settings.enable_inactive_email;
-  const sendWhatsappEnabled = settings.enable_inactive_reminder && settings.enable_inactive_whatsapp;
+async function processInactiveReminderEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_inactive_reminder && settings.enable_inactive_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_inactive_reminder && settings.enable_inactive_whatsapp && delivery.whatsappReady;
   if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const thresholdDays = Number(settings.inactive_days_threshold || 14);
@@ -407,9 +433,9 @@ async function processInactiveReminderEmails({ gym, settings }) {
   }
 }
 
-async function processBirthdayEmails({ gym, settings }) {
-  const sendEmailEnabled = settings.enable_birthday_message && settings.enable_birthday_email;
-  const sendWhatsappEnabled = settings.enable_birthday_message && settings.enable_birthday_whatsapp;
+async function processBirthdayEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_birthday_message && settings.enable_birthday_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_birthday_message && settings.enable_birthday_whatsapp && delivery.whatsappReady;
   if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
   const today = new Date();
@@ -503,11 +529,12 @@ async function processGym(gym, now) {
   if (!gym.email_notifications_enabled) return;
   const settings = await getOrCreateReminderSettings(gym.id);
   if (!shouldRunMemberMessages(now, settings)) return;
+  const delivery = await getDeliveryAvailability(gym);
 
-  await processExpiringReminderEmails({ gym, settings });
-  await processExpiredReminderMessages({ gym, settings });
-  await processInactiveReminderEmails({ gym, settings });
-  await processBirthdayEmails({ gym, settings });
+  await processExpiringReminderEmails({ gym, settings, delivery });
+  await processExpiredReminderMessages({ gym, settings, delivery });
+  await processInactiveReminderEmails({ gym, settings, delivery });
+  await processBirthdayEmails({ gym, settings, delivery });
 }
 
 async function runOnce(now = new Date()) {

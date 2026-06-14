@@ -1,5 +1,5 @@
 const prisma = require("../utils/prisma");
-const { getOrCreateReminderSettings } = require("../services/reminderSettingsService");
+const { getOrCreateReminderSettings, AUTOMATIC_REMINDER_ENABLES } = require("../services/reminderSettingsService");
 
 function pickBoolean(value, fallback) {
   if (typeof value === "boolean") return value;
@@ -123,7 +123,10 @@ const updateReminderSettings = async (req, res) => {
 
     const settings = await prisma.reminder_settings.update({
       where: { gym_id },
-      data: next,
+      data: {
+        ...next,
+        ...AUTOMATIC_REMINDER_ENABLES,
+      },
     });
 
     res.json({ settings });

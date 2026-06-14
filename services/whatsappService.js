@@ -429,12 +429,20 @@ async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
   const safeMediaUrl = String(mediaUrl || '').trim();
 
   if (safeMediaUrl) {
-    await sock.sendMessage(jid, buildMediaMessage(safeMediaUrl, text));
-    return { phone: digits };
+    try {
+      await sock.sendMessage(jid, buildMediaMessage(safeMediaUrl, text));
+      return { phone: digits, media: true };
+    } catch (mediaError) {
+      console.warn('WhatsApp media send failed; retrying as text-only', {
+        gymId,
+        phone: digits,
+        error: mediaError?.message || mediaError,
+      });
+    }
   }
 
   await sock.sendMessage(jid, { text });
-  return { phone: digits };
+  return { phone: digits, media: false };
 }
 
 async function sendWhatsappMedia({ gymId, phone, mediaUrl, caption = '' }) {
