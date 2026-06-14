@@ -4,6 +4,7 @@ const { sendEmail } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 const { sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
+const { runNightlyAggregation } = require('../services/aggregationService');
 const { processAllOwnerSummaries } = require('../services/ownerSummaryService');
 
 const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 5 * * *';
@@ -286,6 +287,15 @@ async function processGym(gym, now, { force = false } = {}) {
 
 async function runOnce() {
   const now = new Date();
+
+  // Run database precomputations
+  try {
+    console.log('[Cron] Running nightly aggregation job...');
+    await runNightlyAggregation();
+  } catch (err) {
+    console.error('[Cron] Nightly aggregation job failed:', err?.message);
+  }
+
   const gyms = await prisma.gyms.findMany({
     select: {
       id: true,
@@ -303,9 +313,10 @@ async function runOnce() {
 
   // Process owner daily summaries
   try {
+    console.log('[Cron] Running owner daily summaries...');
     await processAllOwnerSummaries(now);
   } catch (err) {
-    console.error('Owner summary processing failed:', err?.message);
+    console.error('[Cron] Owner summary processing failed:', err?.message);
   }
 }
 

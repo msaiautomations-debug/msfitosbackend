@@ -173,6 +173,7 @@ app.use('/api/gym-settings', gymSettingsRoutes);
 app.use('/api/website-pricing', websitePricingRoutes);
 app.use('/api/website-inquiries', websiteInquiryRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/owner/dashboard', ownerDashboardRoutes);
 app.use('/api/owner', ownerDashboardRoutes);
 
 app.get('/api/ping', (req, res) => {

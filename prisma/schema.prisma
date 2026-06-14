@@ -393,3 +393,133 @@ model website_inquiries {
   @@index([status, created_at])
   @@index([created_at])
 }
+
+model gym_revenue_daily {
+  id             String   @id @default(uuid())
+  gym_id         String
+  date           DateTime
+  revenue        Float
+  pending_amount Float
+  pending_count  Int
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([gym_id, date])
+  @@index([gym_id, date])
+}
+
+model gym_plan_performance {
+  id             String   @id @default(uuid())
+  gym_id         String
+  plan_id        String
+  month          String
+  revenue        Float
+  active_members Int
+  new_members    Int
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([gym_id, plan_id, month])
+  @@index([gym_id, plan_id, month])
+}
+
+model gym_attendance_daily {
+  id                String   @id @default(uuid())
+  gym_id            String
+  date              DateTime
+  total_checkins    Int
+  unique_members    Int
+  by_hour_breakdown Json
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@unique([gym_id, date])
+  @@index([gym_id, date])
+}
+
+model member_attendance_risk {
+  id              String   @id @default(uuid())
+  member_id       String   @unique
+  gym_id          String
+  last_visit_date DateTime?
+  visits_last_30d Int
+  status          String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([gym_id])
+}
+
+model trial_funnel_daily {
+  id                  String   @id @default(uuid())
+  gym_id              String
+  date                DateTime
+  new_trials          Int
+  converted           Int
+  expired             Int
+  avg_days_to_convert Float
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([gym_id, date])
+  @@index([gym_id, date])
+}
+
+model trainer_performance_monthly {
+  id              String   @id @default(uuid())
+  trainer_id      String
+  gym_id          String
+  month           String
+  sessions_count  Int
+  members_trained Int
+  retention_rate  Float
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([trainer_id, gym_id, month])
+  @@index([trainer_id, gym_id, month])
+}
+
+model lead_funnel_daily {
+  id                 String   @id @default(uuid())
+  gym_id             String
+  date               DateTime
+  new_inquiries      Int
+  inquiries_to_trial Int
+  trials_to_paid     Int
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@unique([gym_id, date])
+  @@index([gym_id, date])
+}
+
+model notification_health_daily {
+  id           String   @id @default(uuid())
+  gym_id       String
+  date         DateTime
+  channel      String
+  sent_count   Int
+  failed_count Int
+  errors       Json?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  @@unique([gym_id, date, channel])
+  @@index([gym_id, date])
+}
+
+model gym_renewal_queue {
+  id              String   @id @default(uuid())
+  gym_id          String
+  member_id       String   @unique
+  status          String
+  expiry_date     DateTime
+  last_visit_date DateTime?
+  phone           String
+  name            String
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([gym_id])
+}
