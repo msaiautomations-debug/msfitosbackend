@@ -33,7 +33,8 @@ function normalizeName(name) {
 }
 
 function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  return cleanEmail || null;
 }
 
 function parseMemberSearchLimit(limitRaw) {
@@ -509,7 +510,7 @@ const addMember = async (req, res) => {
       amount,
       payment_method,
     } = req.body;
-    if (!name || !plan_duration || !email) return res.status(400).json({ error: 'Missing fields' });
+    if (!name || !plan_duration) return res.status(400).json({ error: 'Missing fields' });
 
     const start = start_date ? new Date(start_date) : new Date();
     const cleanName = normalizeName(name);
@@ -529,7 +530,7 @@ const addMember = async (req, res) => {
         : null;
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!emailPattern.test(cleanEmail)) {
+    if (cleanEmail && !emailPattern.test(cleanEmail)) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
     if (parsedHeightCm !== null && (!Number.isFinite(parsedHeightCm) || parsedHeightCm <= 0 || parsedHeightCm > 300)) {
@@ -545,7 +546,7 @@ const addMember = async (req, res) => {
       gym_id,
       cleanName.toLowerCase(),
       cleanPhone,
-      cleanEmail,
+      cleanEmail || '',
       start.toISOString(),
       parsedPlanDuration,
       parsedHeightCm || '',
@@ -562,7 +563,7 @@ const addMember = async (req, res) => {
     const existingMember = await prisma.members.findFirst({
       where: {
         gym_id,
-        OR: [{ phone: cleanPhone }, { email: { equals: cleanEmail, mode: 'insensitive' } }],
+        OR: [{ phone: cleanPhone }, ...(cleanEmail ? [{ email: { equals: cleanEmail, mode: 'insensitive' } }] : [])],
         start_date: start,
         plan_duration: parsedPlanDuration,
         amount: parsedAmount,
@@ -667,7 +668,9 @@ const editMember = async (req, res) => {
 
     if (data.email !== undefined) {
       data.email = normalizeEmail(data.email);
-      if (data.email) {
+      if (!data.email) {
+        data.email = null;
+      } else {
         const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailPattern.test(data.email)) {
           return res.status(400).json({ error: 'Valid email is required' });
@@ -934,7 +937,7 @@ const restoreMember = async (req, res) => {
       payment_method,
     } = req.body;
 
-    if (!name || !plan_duration || !email) return res.status(400).json({ error: 'Missing fields' });
+    if (!name || !plan_duration) return res.status(400).json({ error: 'Missing fields' });
 
     const existingMember = await prisma.members.findFirst({ where: { id, gym_id } });
     if (!existingMember) return res.status(404).json({ error: 'Member not found' });
@@ -942,7 +945,7 @@ const restoreMember = async (req, res) => {
     const start = start_date ? new Date(start_date) : new Date();
     const cleanName = normalizeName(name);
     const cleanPhone = normalizePhone(phone);
-    const cleanEmail = normalizeEmail(email);
+    const cleanEmail = normalizeEmail(email) || null;
     const expiry = getMembershipExpiryFromStart(start, plan_duration);
     const dobDate = dob ? new Date(dob) : null;
     const safeDob = dobDate && !Number.isNaN(dobDate.getTime()) ? dobDate : null;
@@ -954,7 +957,7 @@ const restoreMember = async (req, res) => {
         : null;
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!emailPattern.test(cleanEmail)) {
+    if (cleanEmail && !emailPattern.test(cleanEmail)) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
 
