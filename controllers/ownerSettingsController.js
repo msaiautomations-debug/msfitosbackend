@@ -144,6 +144,19 @@ const logoutOwnerWhatsapp = async (req, res) => {
   }
 };
 
+const testOwnerSummaryWhatsapp = async (req, res) => {
+  try {
+    const { sendTestOwnerSummary } = require('../services/ownerSummaryService');
+    await sendTestOwnerSummary(req.owner_id);
+    res.json({ message: 'Test owner summary WhatsApp sent' });
+  } catch (err) {
+    console.error('Test owner summary WhatsApp error', err);
+    const message = err?.message || 'Failed to send test owner summary';
+    const status = message.includes('not verified') || message.includes('WhatsApp not') ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+};
+
 module.exports = {
   getOwnerSettings,
   updateExpiringSoonDays,
@@ -151,4 +164,5 @@ module.exports = {
   startOwnerWhatsapp,
   requestOwnerPairingCode,
   logoutOwnerWhatsapp,
+  testOwnerSummaryWhatsapp,
 };
