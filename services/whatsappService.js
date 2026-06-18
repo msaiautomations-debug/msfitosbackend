@@ -20,6 +20,12 @@ const autoRestoreSavedSession = process.env.BAILEYS_AUTO_RESTORE !== 'false';
 const adminWhatsappClientId = safeClientId(process.env.BAILEYS_ADMIN_CLIENT_ID || 'admin-shared');
 const logger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
 
+const activeConnections = new Map();
+const qrCodes = new Map();
+const connectionStatus = new Map();
+const reconnectTimers = new Map();
+const disconnectingInstances = new Set();
+
 let baileysModulePromise = null;
 
 function loadBaileys() {
@@ -39,6 +45,127 @@ function getWhatsappSessionKey(gymId) {
 
 function getSessionPath(gymId) {
   return path.join(authDataPath, `session-${getWhatsappSessionKey(gymId)}`);
+}
+
+function getInstanceSessionPath(instanceName) {
+  return path.join(process.cwd(), 'sessions', safeClientId(instanceName));
+}
+
+async function createInstance(instanceName) {
+  const key = safeClientId(instanceName);
+
+  if (activeConnections.has(key)) {
+    return activeConnections.get(key);
+  }
+
+  const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+  } = await loadBaileys();
+
+  const sessionPath = getInstanceSessionPath(key);
+  fs.mkdirSync(sessionPath, { recursive: true });
+
+  const { state: auth, saveCreds } = await useMultiFileAuthState(sessionPath);
+  const socket = makeWASocket({
+    auth,
+    logger,
+    printQRInTerminal: false,
+  });
+
+  activeConnections.set(key, socket);
+  connectionStatus.set(key, 'connecting');
+  disconnectingInstances.delete(key);
+
+  socket.ev.on('creds.update', saveCreds);
+  socket.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      try {
+        const qrImage = await qrcode.toDataURL(qr, { type: 'image/png' });
+        qrCodes.set(key, qrImage);
+        connectionStatus.set(key, 'qr_pending');
+        logger.info({ instanceName: key }, 'WhatsApp QR generated');
+      } catch (error) {
+        connectionStatus.set(key, 'disconnected');
+        logger.error({ err: error, instanceName: key }, 'Failed to generate WhatsApp QR');
+      }
+    }
+
+    if (connection === 'open') {
+      qrCodes.delete(key);
+      connectionStatus.set(key, 'connected');
+      logger.info({ instanceName: key }, 'WhatsApp connected');
+    }
+
+    if (connection === 'close') {
+      activeConnections.delete(key);
+      connectionStatus.set(key, 'disconnected');
+      logger.warn(
+        { err: lastDisconnect?.error, instanceName: key },
+        'WhatsApp disconnected',
+      );
+
+      if (disconnectingInstances.has(key)) {
+        disconnectingInstances.delete(key);
+        return;
+      }
+
+      if (!reconnectTimers.has(key)) {
+        const timer = setTimeout(() => {
+          reconnectTimers.delete(key);
+          createInstance(key).catch((error) => {
+            connectionStatus.set(key, 'disconnected');
+            logger.error({ err: error, instanceName: key }, 'WhatsApp reconnect failed');
+          });
+        }, reconnectDelayMs);
+        reconnectTimers.set(key, timer);
+      }
+    }
+  });
+
+  return socket;
+}
+
+function getQR(instanceName) {
+  return qrCodes.get(safeClientId(instanceName)) || null;
+}
+
+async function sendTextMessage(instanceName, phoneNumber, message) {
+  const key = safeClientId(instanceName);
+  const socket = activeConnections.get(key);
+
+  if (!socket || connectionStatus.get(key) !== 'connected') {
+    throw new Error(`WhatsApp instance "${key}" is not connected`);
+  }
+
+  const digits = normalizePhoneForWhatsapp(phoneNumber);
+  if (!digits) throw new Error('Invalid WhatsApp phone number');
+
+  const text = String(message || '').trim();
+  if (!text) throw new Error('Message is empty');
+
+  return socket.sendMessage(`${digits}@s.whatsapp.net`, { text });
+}
+
+async function disconnectInstance(instanceName) {
+  const key = safeClientId(instanceName);
+  const socket = activeConnections.get(key);
+  const timer = reconnectTimers.get(key);
+
+  disconnectingInstances.add(key);
+  if (timer) {
+    clearTimeout(timer);
+    reconnectTimers.delete(key);
+  }
+
+  if (socket) {
+    await socket.logout();
+  }
+
+  activeConnections.delete(key);
+  qrCodes.delete(key);
+  connectionStatus.delete(key);
+  disconnectingInstances.delete(key);
 }
 
 function hasSavedAuthSession(gymId) {
@@ -315,6 +442,11 @@ async function startClient(gymId) {
 }
 
 async function getStatus(gymId) {
+  const instanceKey = safeClientId(gymId);
+  if (activeConnections.has(instanceKey) || qrCodes.has(instanceKey) || connectionStatus.has(instanceKey)) {
+    return connectionStatus.get(instanceKey) || 'disconnected';
+  }
+
   const state = getState(gymId);
 
   if (state.sock && isStartupStale(state)) {
@@ -673,7 +805,11 @@ async function logoutClient(gymId) {
 }
 
 module.exports = {
+  createInstance,
+  getQR,
   getStatus,
+  sendTextMessage,
+  disconnectInstance,
   startClient,
   logoutClient,
   requestPairingCode,
