@@ -46,7 +46,8 @@ const updateExpiringSoonDays = async (req, res) => {
 const getOwnerWhatsappStatus = async (req, res) => {
   try {
     const sessionKey = ownerSessionKey(req.owner_id);
-    const status = await getStatus(sessionKey);
+    // const status = await getStatus(sessionKey);
+    const status = { status: 'removed', phone: null, error: 'WhatsApp integration has been removed' };
 
     // If status is ready and we haven't saved the phone yet, save it
     if (status.status === 'ready' && status.phone && !req.owner.whatsapp_verified) {
@@ -69,7 +70,8 @@ const getOwnerWhatsappStatus = async (req, res) => {
 const startOwnerWhatsapp = async (req, res) => {
   try {
     const sessionKey = ownerSessionKey(req.owner_id);
-    const result = await startClient(sessionKey);
+    // const result = await startClient(sessionKey);
+    const result = { status: 'removed', error: 'WhatsApp integration has been removed' };
 
     // If immediately ready, update owner record
     if (result.status === 'ready' && result.phone) {
@@ -97,7 +99,8 @@ const requestOwnerPairingCode = async (req, res) => {
     }
 
     const sessionKey = ownerSessionKey(req.owner_id);
-    const result = await requestPairingCode(sessionKey, phone);
+    // const result = await requestPairingCode(sessionKey, phone);
+    const result = { status: 'removed', error: 'WhatsApp integration has been removed' };
 
     // If immediately ready, update owner record
     if (result.status === 'ready' && result.phone) {
@@ -120,7 +123,8 @@ const requestOwnerPairingCode = async (req, res) => {
 const logoutOwnerWhatsapp = async (req, res) => {
   try {
     const sessionKey = ownerSessionKey(req.owner_id);
-    const result = await logoutClient(sessionKey);
+    // const result = await logoutClient(sessionKey);
+    const result = { status: 'removed', error: 'WhatsApp integration has been removed' };
 
     await prisma.owners.update({
       where: { id: req.owner_id },

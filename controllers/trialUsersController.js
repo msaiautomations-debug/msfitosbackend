@@ -1,5 +1,4 @@
 const prisma = require('../utils/prisma');
-const { sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
 
 function addDays(date, days) {

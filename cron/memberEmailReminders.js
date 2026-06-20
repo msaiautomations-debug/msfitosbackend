@@ -4,7 +4,6 @@ const { sendEmail, getEmailConfigIssues } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 const { renderMembershipEmail } = require('../services/membershipEmailService');
 const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
-const { getStatus, sendWhatsappMessage } = require('../services/whatsappService');
 
 const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 let isRunning = false;
