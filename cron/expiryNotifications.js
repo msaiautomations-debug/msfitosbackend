@@ -2,8 +2,6 @@ const cron = require('node-cron');
 const prisma = require('../utils/prisma');
 const { sendEmail } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
-const { sendWhatsappMessage } = require('../services/whatsappService');
-const { logGymNotification } = require('../services/notificationService');
 const { runNightlyAggregation } = require('../services/aggregationService');
 const { processAllOwnerSummaries } = require('../services/ownerSummaryService');
 
@@ -109,31 +107,6 @@ function buildTextSection(title, rows) {
     .join('\n')}`;
 }
 
-function buildWhatsappSummaryText({ gymName, expiredRows, pendingRows, now }) {
-  const lines = [
-    `Daily Summary - ${gymName}`,
-    `Date: ${formatDate(now)}`,
-    `Expired memberships: ${expiredRows.length}`,
-    `Pending payments: ${pendingRows.length}`,
-  ];
-
-  const appendRows = (title, rows) => {
-    lines.push('', title);
-    if (!rows.length) {
-      lines.push('None');
-      return;
-    }
-    rows.slice(0, 10).forEach((row) => {
-      lines.push(`${row.name} | ${row.phone} | ${row.expiry} | ${row.amount}`);
-    });
-    if (rows.length > 10) lines.push(`+${rows.length - 10} more`);
-  };
-
-  appendRows('Expired Members', expiredRows);
-  appendRows('Pending Payments', pendingRows);
-  return lines.join('\n');
-}
-
 function formatCurrency(amount) {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
@@ -198,9 +171,7 @@ async function processGym(gym, now, { force = false } = {}) {
 
   const settings = await getOrCreateReminderSettings(gym.id);
   const emailEnabled = Boolean(settings.enable_owner_daily_summary_email && gym.email);
-  const whatsappEnabled = Boolean(settings.enable_owner_daily_summary_whatsapp && gym.phone);
-
-  if (!force && !emailEnabled && !whatsappEnabled) {
+  if (!force && !emailEnabled) {
     return { sent: false, reason: 'summary-disabled' };
   }
 
@@ -258,28 +229,6 @@ async function processGym(gym, now, { force = false } = {}) {
         retry_count: 1,
       },
     });
-  }
-
-  if (!force && whatsappEnabled) {
-    const message = buildWhatsappSummaryText({ gymName: gym.gym_name, expiredRows, pendingRows, now });
-    try {
-      await sendWhatsappMessage({ gymId: gym.id, phone: gym.phone, message, mediaUrl: gym.logo_url });
-      await logGymNotification({
-        gym_id: gym.id,
-        type: 'owner_daily_summary_whatsapp',
-        message,
-        status: 'sent',
-      });
-      sentAny = true;
-    } catch (err) {
-      const messageText = err?.message || 'Failed to send owner daily summary WhatsApp';
-      await logGymNotification({
-        gym_id: gym.id,
-        type: 'owner_daily_summary_whatsapp',
-        message: messageText,
-        status: 'failed',
-      });
-    }
   }
 
   return sentAny ? { sent: true } : { sent: false, reason: 'send-failed' };
