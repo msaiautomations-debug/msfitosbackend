@@ -1,11 +1,4 @@
 const prisma = require('../utils/prisma');
-const {
-  getStatus,
-  startClient,
-  logoutClient,
-  requestPairingCode,
-} = require('../services/whatsappService');
-
 function ownerSessionKey(ownerId) {
   return `owner_${ownerId}`;
 }

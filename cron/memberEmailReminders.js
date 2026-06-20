@@ -76,7 +76,8 @@ function renderWhatsappBody(body, { gym, member, lastCheckinDate }) {
 
 async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) {
   const message = renderWhatsappBody(body, { gym, member, lastCheckinDate });
-  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
+  // await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
+  throw new Error('WhatsApp integration has been removed');
   await logGymNotification({
     gym_id: gym.id,
     member_id: member.id,
@@ -96,12 +97,7 @@ async function getDeliveryAvailability(gym) {
   const emailConfigIssues = getEmailConfigIssues();
   let whatsappReady = false;
 
-  try {
-    const status = await getStatus(gym.id);
-    whatsappReady = status.status === 'ready';
-  } catch (error) {
-    console.warn('WhatsApp reminder channel unavailable for gym', gym.id, error?.message || error);
-  }
+  // const status = await getStatus(gym.id);
 
   if (emailConfigIssues.length) {
     console.warn('Email reminder channel unavailable:', emailConfigIssues.join(', '));

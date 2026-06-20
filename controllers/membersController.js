@@ -8,7 +8,6 @@ const {
   getMembershipEmailTemplate,
   renderMembershipEmail,
 } = require('../services/membershipEmailService');
-const { sendWhatsappMedia, sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
 
 function addDays(date, days) {
@@ -282,40 +281,8 @@ async function sendRenewalConfirmationMessages({ gym_id, member }) {
   }
 
   if (settings.enable_renewal_whatsapp !== false) {
-    const phone = String(member.phone || '').trim();
-
-    if (!phone) {
-      result.whatsapp = { skipped: true, reason: 'missing-phone' };
-    } else {
-      const message = renderWhatsappTemplate(settings.whatsapp_body_renewal || DEFAULT_RENEWAL_WHATSAPP_BODY, {
-        member,
-        gymName: gym.gym_name,
-      });
-
-      try {
-        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym.logo_url });
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: 'renewal_confirmation_whatsapp',
-          message,
-          status: 'sent',
-        });
-
-        result.whatsapp = { sent: true };
-      } catch (error) {
-        const failureMessage = error?.message || 'Failed to send renewal confirmation WhatsApp';
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: 'renewal_confirmation_whatsapp',
-          message: failureMessage,
-          status: 'failed',
-        });
-
-        result.whatsapp = { sent: false, reason: failureMessage };
-      }
-    }
+    // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym.logo_url });
+    result.whatsapp = { skipped: true, reason: 'whatsapp-disabled' };
   }
 
   return result;
@@ -400,70 +367,9 @@ function buildNewMemberDietPlanCaption({ gym, member }) {
 }
 
 async function sendNewMemberWelcomeWhatsapp({ gym_id, member }) {
-  const gym = await prisma.gyms.findUnique({
-    where: { id: gym_id },
-    select: {
-      id: true,
-      gym_name: true,
-      logo_url: true,
-    },
-  });
-
-  if (!gym || !member.phone) return { sent: false, reason: 'missing-gym-or-phone' };
-
-  const message = buildNewMemberWelcomeMessage({ gym, member });
-
-  try {
-    await sendWhatsappMessage({
-      gymId: gym.id,
-      phone: member.phone,
-      message,
-      mediaUrl: gym.logo_url,
-    });
-
-    await logGymNotification({
-      gym_id: gym.id,
-      member_id: member.id,
-      type: 'new_member_welcome_whatsapp',
-      message,
-      status: 'sent',
-    });
-
-    const dietPlanSettings = await prisma.website_pricing_settings.findUnique({
-      where: { id: 'default' },
-      select: { diet_plan_pdf_url: true },
-    });
-    const dietPlanPdfUrl = dietPlanSettings?.diet_plan_pdf_url;
-
-    if (dietPlanPdfUrl) {
-      const caption = buildNewMemberDietPlanCaption({ gym, member });
-      await sendWhatsappMedia({
-        gymId: gym.id,
-        phone: member.phone,
-        mediaUrl: dietPlanPdfUrl,
-        caption,
-      });
-      await logGymNotification({
-        gym_id: gym.id,
-        member_id: member.id,
-        type: 'new_member_diet_plan_whatsapp',
-        message: caption,
-        status: 'sent',
-      });
-    }
-
-    return { sent: true };
-  } catch (error) {
-    const errorMessage = error?.message || 'Failed to send new member welcome WhatsApp';
-    await logGymNotification({
-      gym_id: gym.id,
-      member_id: member.id,
-      type: 'new_member_welcome_whatsapp',
-      message: errorMessage,
-      status: 'failed',
-    });
-    return { sent: false, reason: errorMessage };
-  }
+  // await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
+  // await sendWhatsappMedia({ gymId: gym.id, phone: member.phone, mediaUrl: dietPlanPdfUrl, caption });
+  return { sent: false, reason: 'whatsapp-disabled' };
 }
 
 function buildMembershipEmailWhere(gym_id, type) {
@@ -1614,87 +1520,8 @@ const sendPendingPaymentEmails = async (req, res) => {
 };
 
 const sendPendingPaymentWhatsapps = async (req, res) => {
-  try {
-    const gym_id = req.gym_id;
-    const { recipients, custom_message } = req.body;
-
-    if (!Array.isArray(recipients) || !recipients.length) {
-      return res.status(400).json({ error: 'At least one recipient is required' });
-    }
-
-    const gym = await prisma.gyms.findUnique({
-      where: { id: gym_id },
-      select: { gym_name: true, logo_url: true },
-    });
-
-    const memberIds = recipients
-      .map((item) => String(item?.member_id || ''))
-      .filter(Boolean);
-
-    const members = await prisma.members.findMany({
-      where: { gym_id, id: { in: memberIds } },
-      select: { id: true, name: true, amount: true, phone: true },
-    });
-
-    const membersById = new Map(members.map((member) => [member.id, member]));
-    let sent = 0;
-    let failed = 0;
-    const results = [];
-
-    for (const recipient of recipients) {
-      const memberId = String(recipient?.member_id || '');
-      const member = membersById.get(memberId);
-      const phone = String(recipient?.phone || member?.phone || '').trim();
-
-      if (!memberId || !member) continue;
-
-      try {
-        const message = buildPendingPaymentWhatsapp({
-          gymName: gym?.gym_name,
-          memberName: member.name,
-          amountDue: member.amount,
-          customMessage: custom_message,
-        });
-
-        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: 'pending_payment_whatsapp',
-          message,
-          status: 'sent',
-        });
-
-        sent += 1;
-        results.push({ member_id: member.id, member_name: member.name, phone, status: 'sent' });
-      } catch (error) {
-        const message = error?.message || 'Failed to send payment reminder WhatsApp';
-        failed += 1;
-        results.push({
-          member_id: member.id,
-          member_name: member.name,
-          phone,
-          status: 'failed',
-          error: message,
-        });
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: 'pending_payment_whatsapp',
-          message,
-          status: 'failed',
-        });
-      }
-    }
-
-    res.json({ sent, failed, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: 'Failed to send payment reminder WhatsApps',
-      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
-    });
-  }
+  // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
+  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
 };
 
 const sendMembershipStatusEmails = async (req, res) => {
@@ -1811,90 +1638,8 @@ const sendMembershipStatusEmails = async (req, res) => {
 };
 
 const sendMembershipStatusWhatsapps = async (req, res) => {
-  try {
-    const gym_id = req.gym_id;
-    const type = String(req.body?.type || '').trim().toLowerCase();
-    const customMessage = String(req.body?.custom_message || '').trim();
-    const memberIds = Array.isArray(req.body?.member_ids)
-      ? req.body.member_ids.map((id) => String(id)).filter(Boolean)
-      : [];
-
-    if (!['expiring', 'expired'].includes(type)) {
-      return res.status(400).json({ error: 'Valid WhatsApp type is required' });
-    }
-
-    const [gym, settings] = await Promise.all([
-      prisma.gyms.findUnique({
-        where: { id: gym_id },
-        select: { gym_name: true, logo_url: true },
-      }),
-      getOrCreateReminderSettings(gym_id),
-    ]);
-
-    const template = getMembershipEmailTemplate(settings, type);
-    const whatsappTemplate =
-      type === 'expired'
-        ? settings.whatsapp_body_expired || template.body
-        : settings.whatsapp_body_expiring || template.body;
-    const where = {
-      ...buildMembershipEmailWhere(gym_id, type),
-      ...(memberIds.length ? { id: { in: memberIds } } : {}),
-    };
-
-    const members = await prisma.members.findMany({
-      where,
-      orderBy: [{ expiry_date: 'asc' }, { created_at: 'desc' }],
-      select: { id: true, name: true, phone: true, amount: true, expiry_date: true },
-    });
-
-    if (!members.length) {
-      return res.json({ sent: 0, failed: 0, results: [] });
-    }
-
-    const results = [];
-    let sent = 0;
-    let failed = 0;
-
-    for (const member of members) {
-      try {
-        const message = renderWhatsappTemplate(customMessage || whatsappTemplate, {
-          member,
-          gymName: gym?.gym_name,
-        });
-
-        await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: `membership_${type}_whatsapp`,
-          message,
-          status: 'sent',
-        });
-
-        results.push({ member_id: member.id, member_name: member.name, status: 'sent', phone: member.phone });
-        sent += 1;
-      } catch (error) {
-        const message = error?.message || 'Failed to send WhatsApp';
-        await logGymNotification({
-          gym_id,
-          member_id: member.id,
-          type: `membership_${type}_whatsapp`,
-          message,
-          status: 'failed',
-        });
-        results.push({ member_id: member.id, member_name: member.name, status: 'failed', phone: member.phone, error: message });
-        failed += 1;
-      }
-    }
-
-    res.json({ sent, failed, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: 'Failed to send membership WhatsApps',
-      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
-    });
-  }
+  // await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
+  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
 };
 
 const manualRenew = async (req, res) => {
