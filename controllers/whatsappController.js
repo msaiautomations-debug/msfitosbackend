@@ -7,6 +7,72 @@ const {
   sendWhatsappMessage,
 } = require('../services/evolutionWhatsapp');
 
+function mapEvolutionStateToStatus(state) {
+  const normalized = String(state || '').toLowerCase();
+
+  if (normalized === 'open') return 'ready';
+  if (normalized === 'connecting') return 'starting';
+  if (normalized === 'close' || normalized === 'closed') return 'logged_out';
+  if (normalized === 'not_created') return 'logged_out';
+  if (normalized === 'qr_pending') return 'qr';
+
+  return normalized || 'unknown';
+}
+
+function statusPayload(result) {
+  if (result?.error && !result?.state) {
+    return { status: 'error', message: result.error };
+  }
+
+  const status = mapEvolutionStateToStatus(result?.state);
+  return {
+    status,
+    message: result?.error || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function qrPayload(result) {
+  if (result?.error) {
+    return { status: 'error', message: result.error };
+  }
+
+  if (result?.qrCode) {
+    return {
+      status: 'qr',
+      qr: result.qrCode,
+      message: 'Scan this QR code from WhatsApp linked devices.',
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  if (result?.pairingCode) {
+    return {
+      status: 'pairing_code',
+      message: result.pairingCode,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  return {
+    status: mapEvolutionStateToStatus(result?.state),
+    message: 'WhatsApp session started, but Evolution API did not return a QR code.',
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function pairingPayload(result) {
+  if (result?.error) {
+    return { status: 'error', message: result.error };
+  }
+
+  return {
+    status: result?.pairingCode ? 'pairing_code' : 'starting',
+    message: result?.pairingCode || 'Pairing code was not returned by Evolution API.',
+    updated_at: new Date().toISOString(),
+  };
+}
+
 async function getGymLogo(gymId) {
   return prisma.gyms.findUnique({
     where: { id: gymId },
@@ -17,7 +83,7 @@ async function getGymLogo(gymId) {
 const getWhatsappStatus = async (req, res) => {
   try {
     const result = await getStatus(req.gym_id);
-    res.json(result);
+    res.json(statusPayload(result));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -26,7 +92,7 @@ const getWhatsappStatus = async (req, res) => {
 const startWhatsapp = async (req, res) => {
   try {
     const result = await startClient(req.gym_id);
-    res.json(result);
+    res.json(qrPayload(result));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -35,9 +101,14 @@ const startWhatsapp = async (req, res) => {
 const logoutWhatsapp = async (req, res) => {
   try {
     const result = await logoutClient(req.gym_id);
-    res.json(result);
+
+    if (result?.error) {
+      return res.json({ status: 'error', message: result.error });
+    }
+
+    return res.json({ status: 'logged_out', message: 'WhatsApp logged out', updated_at: new Date().toISOString() });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -45,7 +116,7 @@ const requestWhatsappPairingCode = async (req, res) => {
   try {
     const { phone } = req.body;
     const result = await requestPairingCode(req.gym_id, phone);
-    res.json(result);
+    res.json(pairingPayload(result));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
