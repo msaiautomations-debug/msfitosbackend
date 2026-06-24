@@ -11,9 +11,16 @@ function getConfig() {
   return { baseUrl, apiKey };
 }
 
-function getInstanceName(gymId) {
-  return `gym-${gymId}`;
+async function getInstanceName(gymId) {
+  const prisma = require('../utils/prisma');
+  const gym = await prisma.gyms.findUnique({
+    where: { id: gymId },
+    select: { whatsapp_instance_name: true },
+  });
+  if (!gym?.whatsapp_instance_name) throw new Error('WhatsApp instance not configured for this gym');
+  return gym.whatsapp_instance_name;
 }
+
 
 function getHeaders(apiKey, includeJson = false) {
   return {
@@ -84,6 +91,39 @@ function cleanPhoneNumber(phone) {
   return digits;
 }
 
+function getMediaMetadata(mediaUrl) {
+  const url = String(mediaUrl || '').trim();
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+
+    const pathname = parsed.pathname.toLowerCase();
+    if (pathname.endsWith('.webp')) {
+      return { media: parsed.toString(), mimetype: 'image/webp', fileName: 'whatsapp-brand.webp' };
+    }
+    if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) {
+      return { media: parsed.toString(), mimetype: 'image/jpeg', fileName: 'whatsapp-brand.jpg' };
+    }
+
+    return { media: parsed.toString(), mimetype: 'image/png', fileName: 'whatsapp-brand.png' };
+  } catch {
+    return null;
+  }
+}
+
+function shouldFallbackToText(error) {
+  return [400, 404, 415, 422].includes(Number(error?.status || 0));
+}
+
+function wrapEvolutionError(err) {
+  const error = new Error(err.message);
+  error.status = err.status;
+  error.data = err.data;
+  return error;
+}
+
 async function createInstance(baseUrl, apiKey, instanceName) {
   return request(`${baseUrl}/instance/create`, {
     method: 'POST',
@@ -133,16 +173,17 @@ function buildStartResult(data, fallbackState = 'qr_pending') {
 async function getStatus(gymId) {
   try {
     const { baseUrl, apiKey } = getConfig();
-    const instanceName = getInstanceName(gymId);
+    const instanceName = await getInstanceName(gymId);
     const data = await request(`${baseUrl}/instance/connectionState/${instanceName}`, {
       method: 'GET',
       headers: getHeaders(apiKey),
     });
 
-    return { state: data?.instance?.state || data?.state || 'unknown', response: data };
+    const state = data?.instance?.state || data?.state || 'unknown';
+    return { state, status: state === 'open' ? 'ready' : state, response: data };
   } catch (err) {
     if (err?.status === 404 || err?.status === 400 || err?.status === 403) {
-      return { state: 'not_created', error: err.message };
+      return { state: 'not_created', status: 'not_created', error: err.message };
     }
     return { error: err.message };
   }
@@ -151,7 +192,7 @@ async function getStatus(gymId) {
 async function startClient(gymId) {
   try {
     const { baseUrl, apiKey } = getConfig();
-    const instanceName = getInstanceName(gymId);
+    const instanceName = await getInstanceName(gymId);
     let createData = null;
 
     try {
@@ -177,7 +218,7 @@ async function startClient(gymId) {
 async function logoutClient(gymId) {
   try {
     const { baseUrl, apiKey } = getConfig();
-    const instanceName = getInstanceName(gymId);
+    const instanceName = await getInstanceName(gymId);
 
     await request(`${baseUrl}/instance/logout/${instanceName}`, {
       method: 'DELETE',
@@ -193,7 +234,7 @@ async function logoutClient(gymId) {
 async function requestPairingCode(gymId, phone) {
   try {
     const { baseUrl, apiKey } = getConfig();
-    const instanceName = getInstanceName(gymId);
+    const instanceName = await getInstanceName(gymId);
     const data = await connectInstance(baseUrl, apiKey, instanceName, phone);
 
     return { pairingCode: extractPairingCode(data), response: data };
@@ -205,23 +246,53 @@ async function requestPairingCode(gymId, phone) {
 async function sendWhatsappMessage({ gymId, phone, message, mediaUrl }) {
   try {
     const { baseUrl, apiKey } = getConfig();
-    const instanceName = getInstanceName(gymId);
+    const instanceName = await getInstanceName(gymId);
     const cleanPhone = cleanPhoneNumber(phone);
-    const hasMedia = Boolean(mediaUrl);
-    const endpoint = hasMedia ? 'sendMedia' : 'sendText';
-    const body = hasMedia
-      ? { number: cleanPhone, mediatype: 'image', media: mediaUrl, caption: message }
-      : { number: cleanPhone, text: message };
+    const text = String(message || '').trim();
+    const media = getMediaMetadata(mediaUrl);
 
-    const data = await request(`${baseUrl}/message/${endpoint}/${instanceName}`, {
+    if (!cleanPhone) throw new Error('Valid WhatsApp phone number is required');
+    if (!text) throw new Error('WhatsApp message cannot be empty');
+
+    const sendText = () => request(`${baseUrl}/message/sendText/${instanceName}`, {
       method: 'POST',
       headers: getHeaders(apiKey, true),
-      body: JSON.stringify(body),
+      body: JSON.stringify({ number: cleanPhone, text }),
     });
 
-    return { success: true, response: data };
+    if (!media) {
+      const data = await sendText();
+      return { success: true, response: data };
+    }
+
+    try {
+      const data = await request(`${baseUrl}/message/sendMedia/${instanceName}`, {
+        method: 'POST',
+        headers: getHeaders(apiKey, true),
+        body: JSON.stringify({
+          number: cleanPhone,
+          mediatype: 'image',
+          mimetype: media.mimetype,
+          media: media.media,
+          caption: text,
+          fileName: media.fileName,
+        }),
+      });
+
+      return { success: true, response: data };
+    } catch (mediaError) {
+      if (!shouldFallbackToText(mediaError)) throw mediaError;
+
+      const data = await sendText();
+      return {
+        success: true,
+        response: data,
+        fallback: 'text',
+        mediaError: mediaError.message,
+      };
+    }
   } catch (err) {
-    return { error: err.message };
+    throw wrapEvolutionError(err);
   }
 }
 

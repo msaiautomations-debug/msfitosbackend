@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
 const { logGymNotification } = require('../services/notificationService');
+const { sendWhatsappMessage } = require('../services/evolutionWhatsapp');
 
 function addDays(date, days) {
   const d = new Date(date);
@@ -352,8 +353,95 @@ const convertTrialUser = async (req, res) => {
 };
 
 const sendTrialFollowUpWhatsapps = async (req, res) => {
-  // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
-  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
+  try {
+    const gym_id = req.gym_id;
+    const type = String(req.body?.type || '').trim().toLowerCase();
+    const trialIds = Array.isArray(req.body?.trial_ids)
+      ? req.body.trial_ids.map((id) => String(id)).filter(Boolean)
+      : [];
+    const customMessage = String(req.body?.custom_message || '').trim();
+
+    if (!allowedFollowUpTypes.has(type)) {
+      return res.status(400).json({ error: 'Valid follow-up type is required' });
+    }
+
+    const includeLeadType = await hasLeadTypeColumn();
+    const [gym, trials] = await Promise.all([
+      prisma.gyms.findUnique({
+        where: { id: gym_id },
+        select: { gym_name: true, logo_url: true },
+      }),
+      prisma.trial_users.findMany({
+        where: buildFollowUpWhere(gym_id, type, trialIds, includeLeadType),
+        orderBy: [{ trial_date: 'desc' }, { created_at: 'desc' }],
+        select: getTrialUserSelect(includeLeadType),
+      }),
+    ]);
+
+    if (!trials.length) {
+      return res.json({ sent: 0, failed: 0, results: [] });
+    }
+
+    const template = customMessage || getDefaultFollowUpTemplate(type);
+    const notificationType = `trial_follow_up_${type}_whatsapp`;
+    let sent = 0;
+    let failed = 0;
+    const results = [];
+
+    for (const rawTrial of trials) {
+      const trial = mapLegacyLeadType(rawTrial);
+      const phone = String(trial.phone || '').trim();
+
+      if (!phone) {
+        const message = 'Missing lead phone';
+        failed += 1;
+        results.push({ trial_id: trial.id, trial_name: trial.name, status: 'failed', error: message });
+        await logGymNotification({
+          gym_id,
+          type: notificationType,
+          message,
+          status: 'failed',
+        });
+        continue;
+      }
+
+      const message = renderLeadWhatsappTemplate(template, {
+        trial,
+        gymName: gym?.gym_name,
+        followUpType: type,
+      });
+
+      try {
+        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
+        await logGymNotification({
+          gym_id,
+          type: notificationType,
+          message,
+          status: 'sent',
+        });
+        sent += 1;
+        results.push({ trial_id: trial.id, trial_name: trial.name, status: 'sent', phone });
+      } catch (error) {
+        const errorMessage = error?.message || 'Failed to send trial follow-up WhatsApp';
+        failed += 1;
+        results.push({ trial_id: trial.id, trial_name: trial.name, status: 'failed', phone, error: errorMessage });
+        await logGymNotification({
+          gym_id,
+          type: notificationType,
+          message: errorMessage,
+          status: 'failed',
+        });
+      }
+    }
+
+    return res.json({ sent, failed, results });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to send trial follow-up WhatsApps',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
 };
 
 module.exports = {

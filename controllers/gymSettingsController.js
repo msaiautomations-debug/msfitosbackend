@@ -7,7 +7,6 @@ const SUPABASE_LOGO_BUCKET = process.env.SUPABASE_GYM_LOGO_BUCKET || 'gym-logos'
 function normalizePublicImageUrl(value) {
   const url = String(value || '').trim();
   if (!url) return null;
-
   try {
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol)) return null;
@@ -20,11 +19,9 @@ function normalizePublicImageUrl(value) {
 function getRequiredSupabaseConfig() {
   const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
   const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
-
   if (!supabaseUrl || !serviceRoleKey) {
     throw new Error('Supabase storage is not configured on the server');
   }
-
   return { supabaseUrl, serviceRoleKey };
 }
 
@@ -50,6 +47,7 @@ const getGymSettings = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
+      whatsapp_instance_name: true,
     },
   });
 
@@ -64,6 +62,7 @@ const getGymSettings = async (req, res) => {
       email: gym.email,
       phone: gym.phone,
       logo_url: gym.logo_url,
+      whatsapp_instance_name: gym.whatsapp_instance_name || null,
     },
   });
 };
@@ -74,6 +73,9 @@ const updateGymSettings = async (req, res) => {
   const ownerName = req.body?.owner_name === undefined ? undefined : String(req.body.owner_name || '').trim();
   const phone = req.body?.phone === undefined ? undefined : String(req.body.phone || '').trim();
   const logoUrl = normalizePublicImageUrl(req.body?.logo_url);
+  const instanceName = req.body?.whatsapp_instance_name === undefined
+    ? undefined
+    : String(req.body.whatsapp_instance_name || '').trim() || null;
 
   if (req.body?.logo_url && !logoUrl) {
     return res.status(400).json({ error: 'Valid public image URL is required' });
@@ -85,6 +87,7 @@ const updateGymSettings = async (req, res) => {
     ...(ownerName !== undefined ? { owner_name: ownerName } : {}),
     ...(phone !== undefined ? { phone } : {}),
     ...(req.body?.logo_url !== undefined ? { logo_url: logoUrl } : {}),
+    ...(instanceName !== undefined ? { whatsapp_instance_name: instanceName } : {}),
   };
 
   const gym = await prisma.gyms.update({
@@ -98,6 +101,7 @@ const updateGymSettings = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
+      whatsapp_instance_name: true,
     },
   });
 
@@ -110,6 +114,7 @@ const updateGymSettings = async (req, res) => {
       email: gym.email,
       phone: gym.phone,
       logo_url: gym.logo_url,
+      whatsapp_instance_name: gym.whatsapp_instance_name || null,
     },
     message: 'Settings updated',
   });
@@ -122,11 +127,9 @@ const updateGymPassword = async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Current password and new password are required' });
   }
-
   if (newPassword.length < 6) {
     return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
-
   if (currentPassword === newPassword) {
     return res.status(400).json({ error: 'New password must be different from current password' });
   }
@@ -160,11 +163,9 @@ const uploadGymLogo = async (req, res) => {
   if (!extension) {
     return res.status(400).json({ error: 'Only JPG, PNG, and WebP images are allowed' });
   }
-
   if (!fileBuffer?.length) {
     return res.status(400).json({ error: 'Image file is required' });
   }
-
   if (fileBuffer.length > MAX_LOGO_BYTES) {
     return res.status(400).json({ error: 'Image must be less than 200KB' });
   }
@@ -209,6 +210,7 @@ const uploadGymLogo = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
+      whatsapp_instance_name: true,
     },
   });
 
@@ -221,6 +223,7 @@ const uploadGymLogo = async (req, res) => {
       email: updatedGym.email,
       phone: updatedGym.phone,
       logo_url: updatedGym.logo_url,
+      whatsapp_instance_name: updatedGym.whatsapp_instance_name || null,
     },
     message: 'Logo uploaded',
   });

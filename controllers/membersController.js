@@ -9,6 +9,7 @@ const {
   renderMembershipEmail,
 } = require('../services/membershipEmailService');
 const { logGymNotification } = require('../services/notificationService');
+const { sendWhatsappMessage } = require('../services/evolutionWhatsapp');
 
 function addDays(date, days) {
   const d = new Date(date);
@@ -281,8 +282,36 @@ async function sendRenewalConfirmationMessages({ gym_id, member }) {
   }
 
   if (settings.enable_renewal_whatsapp !== false) {
-    // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym.logo_url });
-    result.whatsapp = { skipped: true, reason: 'whatsapp-disabled' };
+    if (!member.phone) {
+      result.whatsapp = { skipped: true, reason: 'missing-phone' };
+    } else {
+      const message = renderWhatsappTemplate(settings.whatsapp_body_renewal || DEFAULT_RENEWAL_WHATSAPP_BODY, {
+        member,
+        gymName: gym.gym_name,
+      });
+
+      try {
+        await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym.logo_url });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'renewal_confirmation_whatsapp',
+          message,
+          status: 'sent',
+        });
+        result.whatsapp = { sent: true };
+      } catch (error) {
+        const reason = error?.message || 'Failed to send renewal confirmation WhatsApp';
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'renewal_confirmation_whatsapp',
+          message: reason,
+          status: 'failed',
+        });
+        result.whatsapp = { sent: false, reason };
+      }
+    }
   }
 
   return result;
@@ -367,9 +396,26 @@ function buildNewMemberDietPlanCaption({ gym, member }) {
 }
 
 async function sendNewMemberWelcomeWhatsapp({ gym_id, member }) {
-  // await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
-  // await sendWhatsappMedia({ gymId: gym.id, phone: member.phone, mediaUrl: dietPlanPdfUrl, caption });
-  return { sent: false, reason: 'whatsapp-disabled' };
+  if (!member.phone) return { skipped: true, reason: 'missing-phone' };
+
+  const gym = await prisma.gyms.findUnique({
+    where: { id: gym_id },
+    select: { id: true, gym_name: true, logo_url: true },
+  });
+
+  if (!gym) return { skipped: true, reason: 'missing-gym' };
+
+  const message = buildNewMemberWelcomeMessage({ gym, member });
+  await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym.logo_url });
+  await logGymNotification({
+    gym_id,
+    member_id: member.id,
+    type: 'new_member_welcome_whatsapp',
+    message,
+    status: 'sent',
+  });
+
+  return { sent: true };
 }
 
 function buildMembershipEmailWhere(gym_id, type) {
@@ -1520,8 +1566,99 @@ const sendPendingPaymentEmails = async (req, res) => {
 };
 
 const sendPendingPaymentWhatsapps = async (req, res) => {
-  // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
-  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
+  try {
+    const gym_id = req.gym_id;
+    const { recipients, custom_message } = req.body;
+
+    if (!Array.isArray(recipients) || !recipients.length) {
+      return res.status(400).json({ error: 'At least one recipient is required' });
+    }
+
+    const gym = await prisma.gyms.findUnique({
+      where: { id: gym_id },
+      select: { gym_name: true, logo_url: true },
+    });
+
+    const memberIds = recipients
+      .map((item) => String(item?.member_id || ''))
+      .filter(Boolean);
+
+    const members = await prisma.members.findMany({
+      where: { gym_id, id: { in: memberIds } },
+      select: { id: true, name: true, amount: true, phone: true },
+    });
+
+    const membersById = new Map(members.map((member) => [member.id, member]));
+    let sent = 0;
+    let failed = 0;
+    const results = [];
+
+    for (const recipient of recipients) {
+      const memberId = String(recipient?.member_id || '');
+      const member = membersById.get(memberId);
+      const phone = String(recipient?.phone || member?.phone || '').trim();
+
+      if (!memberId || !member) continue;
+      if (!phone) {
+        const message = 'Missing member phone';
+        failed += 1;
+        results.push({ member_id: member.id, member_name: member.name, phone: '', status: 'failed', error: message });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'pending_payment_whatsapp',
+          message,
+          status: 'failed',
+        });
+        continue;
+      }
+
+      const message = buildPendingPaymentWhatsapp({
+        gymName: gym?.gym_name,
+        memberName: member.name,
+        amountDue: member.amount,
+        customMessage: custom_message,
+      });
+
+      try {
+        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'pending_payment_whatsapp',
+          message,
+          status: 'sent',
+        });
+        sent += 1;
+        results.push({ member_id: member.id, member_name: member.name, phone, status: 'sent' });
+      } catch (error) {
+        const errorMessage = error?.message || 'Failed to send payment reminder WhatsApp';
+        failed += 1;
+        results.push({
+          member_id: member.id,
+          member_name: member.name,
+          phone,
+          status: 'failed',
+          error: errorMessage,
+        });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: 'pending_payment_whatsapp',
+          message: errorMessage,
+          status: 'failed',
+        });
+      }
+    }
+
+    return res.json({ sent, failed, results });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to send payment WhatsApps',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
 };
 
 const sendMembershipStatusEmails = async (req, res) => {
@@ -1638,8 +1775,103 @@ const sendMembershipStatusEmails = async (req, res) => {
 };
 
 const sendMembershipStatusWhatsapps = async (req, res) => {
-  // await sendWhatsappMessage({ gymId: gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
-  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
+  try {
+    const gym_id = req.gym_id;
+    const type = String(req.body?.type || '').trim().toLowerCase();
+    const customMessage = String(req.body?.custom_message || '').trim();
+    const memberIds = Array.isArray(req.body?.member_ids)
+      ? req.body.member_ids.map((id) => String(id)).filter(Boolean)
+      : [];
+
+    if (!['expiring', 'expired'].includes(type)) {
+      return res.status(400).json({ error: 'Valid WhatsApp type is required' });
+    }
+
+    const [gym, settings] = await Promise.all([
+      prisma.gyms.findUnique({
+        where: { id: gym_id },
+        select: { gym_name: true, logo_url: true },
+      }),
+      getOrCreateReminderSettings(gym_id),
+    ]);
+
+    const template =
+      customMessage ||
+      (type === 'expired' ? settings.whatsapp_body_expired : settings.whatsapp_body_expiring);
+    const where = {
+      ...buildMembershipEmailWhere(gym_id, type),
+      ...(memberIds.length ? { id: { in: memberIds } } : {}),
+    };
+
+    const members = await prisma.members.findMany({
+      where,
+      orderBy: [{ expiry_date: 'asc' }, { created_at: 'desc' }],
+      select: { id: true, name: true, phone: true, amount: true, expiry_date: true },
+    });
+
+    if (!members.length) {
+      return res.json({ sent: 0, failed: 0, results: [] });
+    }
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+    const notificationType = `membership_${type}_whatsapp`;
+
+    for (const member of members) {
+      const phone = String(member.phone || '').trim();
+      if (!phone) {
+        const message = 'Missing member phone';
+        results.push({ member_id: member.id, member_name: member.name, status: 'failed', error: message });
+        failed += 1;
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: notificationType,
+          message,
+          status: 'failed',
+        });
+        continue;
+      }
+
+      const message = renderWhatsappTemplate(template, {
+        member,
+        gymName: gym?.gym_name,
+      });
+
+      try {
+        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: notificationType,
+          message,
+          status: 'sent',
+        });
+        results.push({ member_id: member.id, member_name: member.name, status: 'sent', phone });
+        sent += 1;
+      } catch (error) {
+        const errorMessage = error?.message || 'Failed to send WhatsApp';
+        await logGymNotification({
+          gym_id,
+          member_id: member.id,
+          type: notificationType,
+          message: errorMessage,
+          status: 'failed',
+        });
+        results.push({ member_id: member.id, member_name: member.name, status: 'failed', phone, error: errorMessage });
+        failed += 1;
+      }
+    }
+
+    return res.json({ sent, failed, results });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: 'Failed to send membership WhatsApps',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+    });
+  }
 };
 
 const manualRenew = async (req, res) => {

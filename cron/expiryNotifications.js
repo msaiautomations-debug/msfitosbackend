@@ -138,9 +138,10 @@ async function getDeliveryAvailability(gym) {
 
 async function processExpiringReminderEmails({ gym, settings, delivery }) {
   const reminders = [
-    { index: 1, days: Number(settings.reminder_1_days || 7) },
-    { index: 2, days: Number(settings.reminder_2_days || 3) },
-    { index: 3, days: Number(settings.reminder_3_days || 1) },
+    { index: 1, days: Number(settings.reminder_1_days_before ?? settings.reminder_1_days ?? 3) },
+    { index: 2, days: Number(settings.reminder_2_days_before ?? settings.reminder_2_days ?? 7) },
+    { index: 3, days: Number(settings.reminder_3_days_before ?? settings.reminder_3_days ?? 14) },
+    { index: 4, days: Number(settings.reminder_4_days_before ?? settings.reminder_4_days ?? 21) },
   ];
 
   const sendEmailEnabled = settings.enable_expiry_email && delivery.emailConfigured;
@@ -150,13 +151,16 @@ async function processExpiringReminderEmails({ gym, settings, delivery }) {
   for (const reminder of reminders) {
     const target = addDays(new Date(), reminder.days);
     const { start, end } = dayWindowUtc(target);
+    const unsentConditions = [];
+    if (sendEmailEnabled) unsentConditions.push({ [`reminder_${reminder.index}_sent`]: false });
+    if (sendWhatsappEnabled) unsentConditions.push({ [`whatsapp_reminder_${reminder.index}_sent`]: false });
 
     const members = await prisma.members.findMany({
       where: {
         gym_id: gym.id,
         is_inactive: false,
         expiry_date: { gte: start, lte: end },
-        [`reminder_${reminder.index}_sent`]: false,
+        OR: unsentConditions,
       },
       select: {
         id: true,
@@ -268,13 +272,15 @@ async function processExpiredReminderMessages({ gym, settings, delivery }) {
   const target = addDays(new Date(), -Number(settings.expiry_email_delay_days || 0));
   const { start, end } = dayWindowUtc(target);
 
+  const where = {
+    gym_id: gym.id,
+    is_inactive: false,
+    expiry_date: { gte: start, lte: end },
+    ...(!sendWhatsappEnabled ? { expiry_notified: false } : {}),
+  };
+
   const members = await prisma.members.findMany({
-    where: {
-      gym_id: gym.id,
-      is_inactive: false,
-      expiry_date: { gte: start, lte: end },
-      expiry_notified: false,
-    },
+    where,
     select: {
       id: true,
       name: true,
@@ -282,14 +288,26 @@ async function processExpiredReminderMessages({ gym, settings, delivery }) {
       phone: true,
       expiry_date: true,
       amount: true,
+      expiry_notified: true,
     },
   });
 
   for (const member of members) {
     let emailSent = false;
     let whatsappSent = false;
+    const whatsappAlreadySent = sendWhatsappEnabled
+      ? await prisma.gym_notifications.findFirst({
+          where: {
+            gym_id: gym.id,
+            member_id: member.id,
+            type: 'member_expired_whatsapp',
+            status: 'sent',
+          },
+          select: { id: true },
+        })
+      : null;
 
-    if (sendEmailEnabled && member.email) {
+    if (sendEmailEnabled && !member.expiry_notified && member.email) {
       try {
         await sendMemberEmail({
           gym,
@@ -311,7 +329,7 @@ async function processExpiredReminderMessages({ gym, settings, delivery }) {
       }
     }
 
-    if (sendWhatsappEnabled && member.phone) {
+    if (sendWhatsappEnabled && !whatsappAlreadySent && member.phone) {
       try {
         await sendMemberWhatsapp({
           gym,

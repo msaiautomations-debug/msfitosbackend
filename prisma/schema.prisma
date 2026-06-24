@@ -11,7 +11,6 @@ model gyms {
   id                          String                @id @default(uuid())
   gym_name                    String
   gym_id                      String                @unique
-  owner_id                    String?
   owner_name                  String
   email                       String                @unique
   phone                       String
@@ -31,15 +30,17 @@ model gyms {
   created_at                  DateTime              @default(now())
   logo_url                    String?
   owner_email                 String?
+  owner_id                    String?
+  whatsapp_instance_name      String?
   admin_gym_access            admin_gym_access[]
   attendances                 attendances[]
   email_notifications         email_notifications[]
   fitness_tips                fitness_tips[]
   notifications               gym_notifications[]
   gym_subscriptions           gym_subscriptions[]
+  owner                       owners?               @relation(fields: [owner_id], references: [id])
   members                     members[]
   membership_plans            membership_plans[]
-  owner                       owners?               @relation(fields: [owner_id], references: [id])
   payments                    payments[]
   reminder_settings           reminder_settings?
   trainer_sessions            trainer_sessions[]
@@ -48,17 +49,17 @@ model gyms {
 }
 
 model owners {
-  id                  String             @id @default(uuid())
-  name                String
-  email               String             @unique
-  phone               String?
-  password_hash       String?
-  whatsapp_number     String?
-  whatsapp_verified   Boolean            @default(false)
-  expiring_soon_days  Int                @default(7)
-  created_at          DateTime           @default(now())
-  admin_gym_access    admin_gym_access[]
-  gyms                gyms[]
+  id                 String             @id @default(uuid())
+  name               String
+  email              String             @unique
+  phone              String?
+  password_hash      String?
+  whatsapp_number    String?
+  whatsapp_verified  Boolean            @default(false)
+  expiring_soon_days Int                @default(7)
+  created_at         DateTime           @default(now())
+  admin_gym_access   admin_gym_access[]
+  gyms               gyms[]
 }
 
 model admin_gym_access {
@@ -258,8 +259,6 @@ model reminder_settings {
   enable_owner_daily_summary_email    Boolean  @default(true)
   enable_birthday_message             Boolean  @default(true)
   enable_inactive_reminder            Boolean  @default(true)
-  enable_renewal_email                Boolean  @default(true)
-  enable_renewal_whatsapp             Boolean  @default(true)
   inactive_days_threshold             Int      @default(14)
   member_email_send_hour              Int      @default(10)
   member_email_send_minute            Int      @default(0)
@@ -272,8 +271,6 @@ model reminder_settings {
   email_body_birthday                 String   @default("Hi {member_name},\n\nHappy Birthday from everyone at {gym_name}.\n\nWishing you a strong, healthy, and successful year ahead.\n\nThanks,\n{gym_name}")
   email_subject_inactive              String   @default("We miss you at {gym_name}")
   email_body_inactive                 String   @default("Hi {member_name},\n\nWe haven't seen you at {gym_name} recently.\n\nCome back this week and keep your progress going.\n\nThanks,\n{gym_name}")
-  email_subject_renewal               String   @default("Your membership at {gym_name} has been renewed")
-  email_body_renewal                  String   @default("Hi {member_name},\n\nYour membership at {gym_name} has been renewed successfully.\n\nNew expiry: {expiry_date}\nAmount paid: {amount_due}\n\nThanks,\n{gym_name}")
   created_at                          DateTime @default(now())
   updated_at                          DateTime @updatedAt
   enable_birthday_email               Boolean  @default(true)
@@ -286,7 +283,6 @@ model reminder_settings {
   whatsapp_body_expired               String   @default("Hi {member_name}, your membership at {gym_name} expired on {expiry_date}. Amount due: {amount_due}. Please renew to reactivate your access.")
   whatsapp_body_expiring              String   @default("Hi {member_name}, your membership at {gym_name} will expire on {expiry_date}. Amount due: {amount_due}. Please renew before expiry.")
   whatsapp_body_inactive              String   @default("Hi {member_name}, we haven't seen you at {gym_name} recently. Come back this week and keep your progress going.")
-  whatsapp_body_renewal               String   @default("Hi {member_name}, your membership at {gym_name} has been renewed successfully. New expiry: {expiry_date}. Amount paid: {amount_due}. Thank you.")
   enable_expiry_reminder              Boolean  @default(true)
   enable_expiry_reminder_email        Boolean  @default(true)
   enable_expiry_reminder_whatsapp     Boolean  @default(true)
@@ -294,6 +290,11 @@ model reminder_settings {
   reminder_2_days_before              Int      @default(7)
   reminder_3_days_before              Int      @default(14)
   reminder_4_days_before              Int      @default(21)
+  email_body_renewal                  String   @default("Hi {member_name},\n\nYour membership at {gym_name} has been renewed successfully.\n\nNew expiry: {expiry_date}\nAmount paid: {amount_due}\n\nThanks,\n{gym_name}")
+  email_subject_renewal               String   @default("Your membership at {gym_name} has been renewed")
+  enable_renewal_email                Boolean  @default(true)
+  enable_renewal_whatsapp             Boolean  @default(true)
+  whatsapp_body_renewal               String   @default("Hi {member_name}, your membership at {gym_name} has been renewed successfully. New expiry: {expiry_date}. Amount paid: {amount_due}. Thank you.")
   gym                                 gyms     @relation(fields: [gym_id], references: [id])
 
   @@index([gym_id])
@@ -315,7 +316,6 @@ model fitness_tips {
 model trial_users {
   id                 String   @id @default(uuid())
   gym_id             String
-  lead_type          String   @default("trial")
   name               String
   phone              String
   trial_date         DateTime
@@ -328,6 +328,7 @@ model trial_users {
   reminder_day2_sent Boolean  @default(false)
   reminder_day5_sent Boolean  @default(false)
   created_at         DateTime @default(now())
+  lead_type          String   @default("trial")
   gym                gyms     @relation(fields: [gym_id], references: [id])
 
   @@index([gym_id])

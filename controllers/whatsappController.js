@@ -1,4 +1,5 @@
 const prisma = require('../utils/prisma');
+const { logGymNotification } = require('../services/notificationService');
 const {
   getStatus,
   startClient,
@@ -155,7 +156,7 @@ const broadcastFitnessTip = async (req, res) => {
           gym_id: gymId,
           phone: { not: '' },
         },
-        select: { phone: true },
+        select: { id: true, name: true, phone: true },
       }),
     ]);
 
@@ -163,16 +164,42 @@ const broadcastFitnessTip = async (req, res) => {
       return res.status(404).json({ error: 'Fitness tip not found' });
     }
 
+    let sent = 0;
+    let failed = 0;
+    const results = [];
+
     for (const member of members) {
-      await sendWhatsappMessage({
-        gymId,
-        phone: member.phone,
-        message: tip.message,
-        mediaUrl: gym?.logo_url,
-      });
+      try {
+        await sendWhatsappMessage({
+          gymId,
+          phone: member.phone,
+          message: tip.message,
+          mediaUrl: gym?.logo_url,
+        });
+        await logGymNotification({
+          gym_id: gymId,
+          member_id: member.id,
+          type: 'fitness_tip_whatsapp',
+          message: tip.message,
+          status: 'sent',
+        });
+        sent += 1;
+        results.push({ member_id: member.id, member_name: member.name, status: 'sent' });
+      } catch (error) {
+        const errorMessage = error?.message || 'Failed to send fitness tip WhatsApp';
+        await logGymNotification({
+          gym_id: gymId,
+          member_id: member.id,
+          type: 'fitness_tip_whatsapp',
+          message: errorMessage,
+          status: 'failed',
+        });
+        failed += 1;
+        results.push({ member_id: member.id, member_name: member.name, status: 'failed', error: errorMessage });
+      }
     }
 
-    return res.json({ success: true, sentCount: members.length });
+    return res.json({ sent, failed, results });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
