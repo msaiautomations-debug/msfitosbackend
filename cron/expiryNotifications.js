@@ -1,307 +1,563 @@
 const cron = require('node-cron');
 const prisma = require('../utils/prisma');
-const { sendEmail } = require('../services/emailService');
+const { sendEmail, getEmailConfigIssues } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
-const { sendWhatsappMessage } = require('../services/whatsappService');
-const { logGymNotification } = require('../services/notificationService');
-const { runNightlyAggregation } = require('../services/aggregationService');
-const { processAllOwnerSummaries } = require('../services/ownerSummaryService');
+const { renderMembershipEmail } = require('../services/membershipEmailService');
+const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
+const { getStatus, sendWhatsappMessage } = require('../services/whatsappService');
 
-const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 5 * * *';
+const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 let isRunning = false;
 
-function escapeHtml(value) {
-  if (!value) return '';
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+function addDays(date, days) {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
 }
 
-function formatDate(date) {
+function dayWindowUtc(date) {
+  const start = new Date(date);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setUTCHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+async function sendMemberEmail({ gym, member, subject, body, type }) {
+  const rendered = renderMembershipEmail({
+    template: { subject, body },
+    member,
+    gymName: gym.gym_name,
+  });
+
+  await sendEmail({
+    to: member.email,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+  });
+
+  await prisma.email_notifications.create({
+    data: {
+      gym_id: gym.id,
+      type,
+      status: 'sent',
+      subject: rendered.subject,
+      payload: {
+        member_id: member.id,
+        member_name: member.name,
+        email: member.email,
+      },
+    },
+  });
+
+  return rendered.subject;
+}
+
+function formatDateForMessage(date) {
+  if (!date) return '';
   return new Date(date).toISOString().slice(0, 10);
 }
 
-function buildSectionRows(rows, emptyLabel, columns) {
-  if (!rows.length) {
-    return `<tr><td colspan="${columns.length}" style="padding:8px;">${escapeHtml(emptyLabel)}</td></tr>`;
-  }
-
-  return rows
-    .map((row) => {
-      const cells = columns
-        .map((column) => `<td style="padding:8px;border-bottom:1px solid #eee;">${escapeHtml(row[column.key])}</td>`)
-        .join('');
-      return `<tr>${cells}</tr>`;
-    })
-    .join('');
-}
-
-function buildTable(title, rows, columns, emptyLabel) {
-  const headers = columns
-    .map(
-      (column) =>
-        `<th style="text-align:left;border-bottom:1px solid #ddd;padding:8px;background:#f8fafc;">${escapeHtml(column.label)}</th>`,
-    )
-    .join('');
-
-  return `
-    <div style="margin-top:24px;">
-      <h3 style="margin:0 0 12px;">${escapeHtml(title)}</h3>
-      <table style="border-collapse:collapse;width:100%;max-width:900px;">
-        <thead>
-          <tr>${headers}</tr>
-        </thead>
-        <tbody>
-          ${buildSectionRows(rows, emptyLabel, columns)}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function buildEmailHtml({ gymName, expiredRows, pendingRows, now }) {
-  return `
-    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827;">
-      <h2>Daily Owner Summary for ${escapeHtml(gymName)}</h2>
-      <p>Date: ${escapeHtml(formatDate(now))}</p>
-      <p>
-        Expired memberships: <strong>${expiredRows.length}</strong><br />
-        Pending payments: <strong>${pendingRows.length}</strong>
-      </p>
-      ${buildTable(
-        'Expired Members',
-        expiredRows,
-        [
-          { key: 'name', label: 'Member Name' },
-          { key: 'phone', label: 'Phone' },
-          { key: 'email', label: 'Email' },
-          { key: 'expiry', label: 'Expiry Date' },
-          { key: 'plan', label: 'Plan' },
-          { key: 'amount', label: 'Amount' },
-        ],
-        'No expired members.',
-      )}
-      ${buildTable(
-        'Pending Payments',
-        pendingRows,
-        [
-          { key: 'name', label: 'Member Name' },
-          { key: 'phone', label: 'Phone' },
-          { key: 'email', label: 'Email' },
-          { key: 'expiry', label: 'Expiry Date' },
-          { key: 'plan', label: 'Plan' },
-          { key: 'amount', label: 'Amount' },
-        ],
-        'No pending payments.',
-      )}
-      <p style="margin-top:24px;">Thank you for using Gym Management SaaS.</p>
-    </div>
-  `;
-}
-
-function buildTextSection(title, rows) {
-  if (!rows.length) return `${title}\nNone`;
-  return `${title}\n${rows
-    .map((row) => `${row.name} | ${row.phone} | ${row.email} | ${row.expiry} | ${row.plan} | ${row.amount}`)
-    .join('\n')}`;
-}
-
-function buildWhatsappSummaryText({ gymName, expiredRows, pendingRows, now }) {
-  const lines = [
-    `Daily Summary - ${gymName}`,
-    `Date: ${formatDate(now)}`,
-    `Expired memberships: ${expiredRows.length}`,
-    `Pending payments: ${pendingRows.length}`,
-  ];
-
-  const appendRows = (title, rows) => {
-    lines.push('', title);
-    if (!rows.length) {
-      lines.push('None');
-      return;
-    }
-    rows.slice(0, 10).forEach((row) => {
-      lines.push(`${row.name} | ${row.phone} | ${row.expiry} | ${row.amount}`);
-    });
-    if (rows.length > 10) lines.push(`+${rows.length - 10} more`);
+function renderWhatsappBody(body, { gym, member, lastCheckinDate }) {
+  const values = {
+    member_name: member?.name || 'Member',
+    gym_name: gym?.gym_name || 'Your gym',
+    expiry_date: formatDateForMessage(member?.expiry_date),
+    amount_due: String(Number(member?.amount || 0)),
+    last_checkin_date: lastCheckinDate ? formatDateForMessage(lastCheckinDate) : '',
   };
 
-  appendRows('Expired Members', expiredRows);
-  appendRows('Pending Payments', pendingRows);
-  return lines.join('\n');
+  return String(body || '')
+    .replace(/\{\{\s*(member_name|gym_name|expiry_date|amount_due|last_checkin_date)\s*\}\}/g, (_, key) => values[key] || '')
+    .replace(/\{(member_name|gym_name|expiry_date|amount_due|last_checkin_date)\}/g, (_, key) => values[key] || '')
+    .trim();
 }
 
-function formatCurrency(amount) {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(Number(amount || 0));
+async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) {
+  const message = renderWhatsappBody(body, { gym, member, lastCheckinDate });
+  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
+  await logGymNotification({
+    gym_id: gym.id,
+    member_id: member.id,
+    type,
+    message,
+    status: 'sent',
+  });
 }
 
-async function getSummaryRows(gymId) {
-  const now = new Date();
-  const expiredMembers = await prisma.members.findMany({
-    where: {
-      gym_id: gymId,
-      is_inactive: false,
-      expiry_date: { lt: now },
-    },
-    orderBy: [{ expiry_date: 'asc' }, { created_at: 'desc' }],
-    select: {
-      name: true,
-      phone: true,
-      email: true,
-      expiry_date: true,
-      plan_duration: true,
-      amount: true,
-    },
-  });
+function shouldRunMemberMessages(now, settings) {
+  const hour = Number(settings.member_email_send_hour ?? 10);
+  const minute = Number(settings.member_email_send_minute ?? 0);
+  return now.getHours() === hour && now.getMinutes() === minute;
+}
 
-  const pendingPayments = await prisma.members.findMany({
-    where: {
-      gym_id: gymId,
-      is_inactive: false,
-      payment_method: null,
-    },
-    orderBy: [{ expiry_date: 'asc' }, { created_at: 'desc' }],
-    select: {
-      name: true,
-      phone: true,
-      email: true,
-      expiry_date: true,
-      plan_duration: true,
-      amount: true,
-    },
-  });
+async function getDeliveryAvailability(gym) {
+  const emailConfigIssues = getEmailConfigIssues();
+  let whatsappReady = false;
 
-  const mapRow = (member) => ({
-    name: member.name,
-    phone: member.phone || '-',
-    email: member.email || '-',
-    expiry: formatDate(member.expiry_date),
-    plan: `${member.plan_duration || '-'} days`,
-    amount: formatCurrency(member.amount),
-  });
+  try {
+    const status = await getStatus(gym.id);
+    whatsappReady = status.status === 'ready';
+  } catch (error) {
+    console.warn('WhatsApp reminder channel unavailable for gym', gym.id, error?.message || error);
+  }
+
+  if (emailConfigIssues.length) {
+    console.warn('Email reminder channel unavailable:', emailConfigIssues.join(', '));
+  }
+  if (!whatsappReady) {
+    console.warn('WhatsApp reminder channel skipped because the session is not ready for gym', gym.id);
+  }
 
   return {
-    expiredRows: expiredMembers.map(mapRow),
-    pendingRows: pendingPayments.map(mapRow),
+    emailConfigured: emailConfigIssues.length === 0,
+    whatsappReady,
   };
 }
 
-async function processGym(gym, now, { force = false } = {}) {
-  if (!gym.email_notifications_enabled) return { sent: false, reason: 'notifications-disabled' };
+async function processExpiringReminderEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_expiry_reminder && settings.enable_expiry_reminder_whatsapp && delivery.whatsappReady;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
-  const settings = await getOrCreateReminderSettings(gym.id);
-  const emailEnabled = Boolean(settings.enable_owner_daily_summary_email && gym.email);
-  const whatsappEnabled = Boolean(settings.enable_owner_daily_summary_whatsapp && gym.phone);
+  const reminders = [
+    { index: 1, days: settings.reminder_1_days_before },
+    { index: 2, days: settings.reminder_2_days_before },
+    { index: 3, days: settings.reminder_3_days_before },
+    { index: 4, days: settings.reminder_4_days_before },
+  ];
 
-  if (!force && !emailEnabled && !whatsappEnabled) {
-    return { sent: false, reason: 'summary-disabled' };
-  }
+  for (const reminder of reminders) {
+    const target = addDays(new Date(), Number(reminder.days || 0));
+    const { start, end } = dayWindowUtc(target);
 
-  const { expiredRows, pendingRows } = await getSummaryRows(gym.id);
-  if (!force && !expiredRows.length && !pendingRows.length) {
-    return { sent: false, reason: 'empty-summary' };
-  }
-
-  const subject = `Daily owner summary - ${gym.gym_name} - ${formatDate(now)}`;
-  const html = buildEmailHtml({ gymName: gym.gym_name, expiredRows, pendingRows, now });
-  const text = [
-    `Daily Owner Summary for ${gym.gym_name}`,
-    `Date: ${formatDate(now)}`,
-    `Expired memberships: ${expiredRows.length}`,
-    `Pending payments: ${pendingRows.length}`,
-    '',
-    buildTextSection('Expired Members', expiredRows),
-    '',
-    buildTextSection('Pending Payments', pendingRows),
-  ].join('\n');
-
-  let sentAny = false;
-
-  try {
-    if (emailEnabled || force) {
-      if (!gym.email) throw new Error('Gym email not found');
-      await sendEmail({ to: gym.email, subject, html, text });
-      await prisma.email_notifications.create({
-        data: {
-          gym_id: gym.id,
-          type: force ? 'owner_daily_summary_test' : 'owner_daily_summary',
-          status: 'sent',
-          subject,
-          payload: {
-            expired_members: expiredRows.length,
-            pending_payments: pendingRows.length,
-          },
-        },
-      });
-      sentAny = true;
-    }
-  } catch (err) {
-    console.error('Owner daily summary email failed for gym', gym.id, err?.message || err);
-    await prisma.email_notifications.create({
-      data: {
+    // Fetch members who still need email OR whatsapp (not both necessarily done)
+    const members = await prisma.members.findMany({
+      where: {
         gym_id: gym.id,
-        type: force ? 'owner_daily_summary_test' : 'owner_daily_summary',
-        status: 'failed',
-        subject,
-        payload: {
-          expired_members: expiredRows.length,
-          pending_payments: pendingRows.length,
-        },
-        error_message: err?.message || String(err),
-        retry_count: 1,
+        is_inactive: false,
+        expiry_date: { gte: start, lte: end },
+        OR: [
+          // Email not sent yet and email is enabled
+          ...(sendEmailEnabled ? [{ [`reminder_${reminder.index}_sent`]: false }] : []),
+          // WhatsApp not sent yet and whatsapp is enabled
+          ...(sendWhatsappEnabled ? [{ [`whatsapp_reminder_${reminder.index}_sent`]: false }] : []),
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        expiry_date: true,
+        amount: true,
+        [`reminder_${reminder.index}_sent`]: true,
+        [`whatsapp_reminder_${reminder.index}_sent`]: true,
       },
     });
-  }
 
-  if (!force && whatsappEnabled) {
-    const message = buildWhatsappSummaryText({ gymName: gym.gym_name, expiredRows, pendingRows, now });
-    try {
-      await sendWhatsappMessage({ gymId: gym.id, phone: gym.phone, message, mediaUrl: gym.logo_url });
-      await logGymNotification({
-        gym_id: gym.id,
-        type: 'owner_daily_summary_whatsapp',
-        message,
-        status: 'sent',
+    for (const member of members) {
+      const emailAlreadySent = member[`reminder_${reminder.index}_sent`];
+      const whatsappAlreadySent = member[`whatsapp_reminder_${reminder.index}_sent`];
+
+      const shouldSendEmail = sendEmailEnabled && !emailAlreadySent && member.email;
+      const shouldSendWhatsapp = sendWhatsappEnabled && !whatsappAlreadySent && member.phone;
+
+      if (!shouldSendEmail && !shouldSendWhatsapp) continue;
+
+      let emailSent = false;
+      let whatsappSent = false;
+      let subject = settings.email_subject_expiring;
+
+      // --- Send Email ---
+      if (shouldSendEmail) {
+        try {
+          subject = await sendMemberEmail({
+            gym,
+            member,
+            subject: settings.email_subject_expiring,
+            body: settings.email_body_expiring,
+            type: `member_expiring_email_reminder_${reminder.index}`,
+          });
+          emailSent = true;
+        } catch (err) {
+          const message = err?.message || 'Failed to send expiring reminder email';
+          console.error('Expiring reminder email failed', gym.id, member.id, message);
+          await prisma.email_notifications.create({
+            data: {
+              gym_id: gym.id,
+              type: `member_expiring_email_reminder_${reminder.index}`,
+              status: 'failed',
+              subject: settings.email_subject_expiring,
+              error_message: message,
+              payload: { member_id: member.id, member_name: member.name, email: member.email || null },
+            },
+          });
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: `member_expiring_email_reminder_${reminder.index}`,
+            message,
+            status: 'failed',
+          });
+        }
+      }
+
+      // --- Send WhatsApp ---
+      if (shouldSendWhatsapp) {
+        try {
+          await sendMemberWhatsapp({
+            gym,
+            member,
+            body: settings.whatsapp_body_expiring,
+            type: `member_expiring_whatsapp_reminder_${reminder.index}`,
+          });
+          whatsappSent = true;
+        } catch (err) {
+          await logGymNotification({
+            gym_id: gym.id,
+            member_id: member.id,
+            type: `member_expiring_whatsapp_reminder_${reminder.index}`,
+            message: err?.message || 'Failed to send expiring reminder WhatsApp',
+            status: 'failed',
+          });
+        }
+      }
+
+      // --- Update flags independently ---
+      const updateData = {};
+      if (emailSent) updateData[`reminder_${reminder.index}_sent`] = true;
+      if (whatsappSent) updateData[`whatsapp_reminder_${reminder.index}_sent`] = true;
+
+      if (Object.keys(updateData).length > 0) {
+        await prisma.members.update({
+          where: { id: member.id },
+          data: updateData,
+        });
+      }
+
+      if (emailSent) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: `member_expiring_email_reminder_${reminder.index}`,
+          message: subject,
+          status: 'sent',
+        });
+      }
+    }
+  }
+}
+
+async function processExpiredReminderMessages({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_expiry_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_expiry_whatsapp && delivery.whatsappReady;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
+
+  const target = addDays(new Date(), -Number(settings.expiry_email_delay_days || 0));
+  const { start, end } = dayWindowUtc(target);
+
+  const members = await prisma.members.findMany({
+    where: {
+      gym_id: gym.id,
+      is_inactive: false,
+      expiry_date: { gte: start, lte: end },
+      expiry_notified: false,
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      expiry_date: true,
+      amount: true,
+    },
+  });
+
+  for (const member of members) {
+    let emailSent = false;
+    let whatsappSent = false;
+    let subject = settings.email_subject_expired;
+
+    // --- Send Email ---
+    if (sendEmailEnabled && member.email) {
+      try {
+        subject = await sendMemberEmail({
+          gym,
+          member,
+          subject: settings.email_subject_expired,
+          body: settings.email_body_expired,
+          type: 'member_expired_email',
+        });
+        emailSent = true;
+      } catch (err) {
+        const message = err?.message || 'Failed to send expired reminder email';
+        console.error('Expired reminder email failed', gym.id, member.id, message);
+        await prisma.email_notifications.create({
+          data: {
+            gym_id: gym.id,
+            type: 'member_expired_email',
+            status: 'failed',
+            subject: settings.email_subject_expired,
+            error_message: message,
+            payload: { member_id: member.id, member_name: member.name, email: member.email || null },
+          },
+        });
+      }
+    }
+
+    // --- Send WhatsApp ---
+    if (sendWhatsappEnabled && member.phone) {
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.whatsapp_body_expired,
+          type: 'member_expired_whatsapp',
+        });
+        whatsappSent = true;
+      } catch (err) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'member_expired_whatsapp',
+          message: err?.message || 'Failed to send expired reminder WhatsApp',
+          status: 'failed',
+        });
+      }
+    }
+
+    // Only mark notified if at least one channel succeeded
+    if (emailSent || whatsappSent) {
+      await prisma.members.update({
+        where: { id: member.id },
+        data: { expiry_notified: true },
       });
-      sentAny = true;
-    } catch (err) {
-      const messageText = err?.message || 'Failed to send owner daily summary WhatsApp';
+
+      if (emailSent) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'member_expired_email',
+          message: subject,
+          status: 'sent',
+        });
+      }
+    }
+  }
+}
+
+async function processInactiveReminderEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_inactive_reminder && settings.enable_inactive_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_inactive_reminder && settings.enable_inactive_whatsapp && delivery.whatsappReady;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
+
+  const thresholdDays = Number(settings.inactive_days_threshold || 14);
+  const cutoff = addDays(new Date(), -thresholdDays);
+
+  const rows = await prisma.$queryRaw`
+    SELECT m.id, m.gym_id, m.name, m.email, m.phone, m.start_date, m.expiry_date, m.amount, m.is_inactive,
+           MAX(a.checkin_at) AS last_checkin
+    FROM "members" m
+    LEFT JOIN "attendances" a ON a.member_id = m.id
+    WHERE m.gym_id = ${gym.id}
+      AND m.expiry_date >= ${new Date()}
+    GROUP BY m.id
+  `;
+
+  for (const member of rows) {
+    if (member.is_inactive) continue;
+
+    const lastCheckin = member.last_checkin || member.start_date;
+    if (!lastCheckin) continue;
+    if (new Date(lastCheckin) > cutoff) continue;
+
+    let emailSent = false;
+    let whatsappSent = false;
+    let subject = settings.email_subject_inactive;
+
+    // --- Send Email ---
+    if (sendEmailEnabled && member.email) {
+      try {
+        subject = await sendMemberEmail({
+          gym,
+          member: { ...member, last_checkin_date: lastCheckin },
+          subject: settings.email_subject_inactive,
+          body: settings.email_body_inactive,
+          type: 'inactive_member_email',
+        });
+        emailSent = true;
+      } catch (err) {
+        const message = err?.message || 'Failed to send inactive reminder email';
+        console.error('Inactive reminder email failed', gym.id, member.id, message);
+        await prisma.email_notifications.create({
+          data: {
+            gym_id: gym.id,
+            type: 'inactive_member_email',
+            status: 'failed',
+            subject: settings.email_subject_inactive,
+            error_message: message,
+            payload: { member_id: member.id, member_name: member.name, email: member.email || null },
+          },
+        });
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'inactive_member_email',
+          message,
+          status: 'failed',
+        });
+      }
+    }
+
+    // --- Send WhatsApp ---
+    if (sendWhatsappEnabled && member.phone) {
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.whatsapp_body_inactive,
+          type: 'inactive_member_whatsapp',
+          lastCheckinDate: lastCheckin,
+        });
+        whatsappSent = true;
+      } catch (err) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'inactive_member_whatsapp',
+          message: err?.message || 'Failed to send inactive reminder WhatsApp',
+          status: 'failed',
+        });
+      }
+    }
+
+    // Mark inactive only if at least one channel succeeded
+    if (emailSent || whatsappSent) {
+      await prisma.members.update({
+        where: { id: member.id },
+        data: { is_inactive: true, inactive_since: new Date() },
+      });
+
       await logGymNotification({
         gym_id: gym.id,
-        type: 'owner_daily_summary_whatsapp',
-        message: messageText,
-        status: 'failed',
+        member_id: member.id,
+        type: 'inactive_member_email',
+        message: subject,
+        status: 'sent',
       });
     }
   }
-
-  return sentAny ? { sent: true } : { sent: false, reason: 'send-failed' };
 }
 
-async function runOnce() {
-  const now = new Date();
+async function processBirthdayEmails({ gym, settings, delivery }) {
+  const sendEmailEnabled = settings.enable_birthday_message && settings.enable_birthday_email && delivery.emailConfigured;
+  const sendWhatsappEnabled = settings.enable_birthday_message && settings.enable_birthday_whatsapp && delivery.whatsappReady;
+  if (!sendEmailEnabled && !sendWhatsappEnabled) return;
 
-  // Run database precomputations
-  try {
-    console.log('[Cron] Running nightly aggregation job...');
-    await runNightlyAggregation();
-  } catch (err) {
-    console.error('[Cron] Nightly aggregation job failed:', err?.message);
+  const today = new Date();
+  const day = today.getUTCDate();
+  const month = today.getUTCMonth() + 1;
+
+  const members = await prisma.$queryRaw`
+    SELECT id, gym_id, name, email, phone, dob
+    FROM "members"
+    WHERE gym_id = ${gym.id}
+      AND dob IS NOT NULL
+      AND EXTRACT(MONTH FROM dob) = ${month}
+      AND EXTRACT(DAY FROM dob) = ${day}
+  `;
+
+  for (const member of members) {
+    const alreadySent = await hasSentGymNotificationToday({
+      gym_id: gym.id,
+      member_id: member.id,
+      type: 'birthday_email',
+    });
+    if (alreadySent) continue;
+
+    let subject = settings.email_subject_birthday;
+
+    // --- Send Email ---
+    if (sendEmailEnabled && member.email) {
+      try {
+        subject = await sendMemberEmail({
+          gym,
+          member,
+          subject: settings.email_subject_birthday,
+          body: settings.email_body_birthday,
+          type: 'birthday_email',
+        });
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'birthday_email',
+          message: subject,
+          status: 'sent',
+        });
+      } catch (err) {
+        const message = err?.message || 'Failed to send birthday email';
+        console.error('Birthday email failed', gym.id, member.id, message);
+        await prisma.email_notifications.create({
+          data: {
+            gym_id: gym.id,
+            type: 'birthday_email',
+            status: 'failed',
+            subject: settings.email_subject_birthday,
+            error_message: message,
+            payload: { member_id: member.id, member_name: member.name, email: member.email || null },
+          },
+        });
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'birthday_email',
+          message,
+          status: 'failed',
+        });
+      }
+    }
+
+    // --- Send WhatsApp ---
+    if (sendWhatsappEnabled && member.phone) {
+      try {
+        await sendMemberWhatsapp({
+          gym,
+          member,
+          body: settings.whatsapp_body_birthday || settings.message_birthday,
+          type: 'birthday_whatsapp',
+        });
+      } catch (err) {
+        await logGymNotification({
+          gym_id: gym.id,
+          member_id: member.id,
+          type: 'birthday_whatsapp',
+          message: err?.message || 'Failed to send birthday WhatsApp',
+          status: 'failed',
+        });
+      }
+    }
   }
+}
 
+async function processGym(gym, now) {
+  if (!gym.email_notifications_enabled) return;
+  const settings = await getOrCreateReminderSettings(gym.id);
+  if (!shouldRunMemberMessages(now, settings)) return;
+  const delivery = await getDeliveryAvailability(gym);
+
+  await processExpiringReminderEmails({ gym, settings, delivery });
+  await processExpiredReminderMessages({ gym, settings, delivery });
+  await processInactiveReminderEmails({ gym, settings, delivery });
+  await processBirthdayEmails({ gym, settings, delivery });
+}
+
+async function runOnce(now = new Date()) {
   const gyms = await prisma.gyms.findMany({
     select: {
       id: true,
       gym_name: true,
-      email: true,
-      phone: true,
       logo_url: true,
       email_notifications_enabled: true,
     },
@@ -310,14 +566,6 @@ async function runOnce() {
   for (const gym of gyms) {
     await processGym(gym, now);
   }
-
-  // Process owner daily summaries
-  try {
-    console.log('[Cron] Running owner daily summaries...');
-    await processAllOwnerSummaries(now);
-  } catch (err) {
-    console.error('[Cron] Owner summary processing failed:', err?.message);
-  }
 }
 
 function start() {
@@ -325,10 +573,10 @@ function start() {
   if (process.env.CRON_TIMEZONE) options.timezone = process.env.CRON_TIMEZONE;
 
   cron.schedule(
-    OWNER_DAILY_SUMMARY_CRON,
+    MEMBER_EMAIL_REMINDER_CRON,
     async () => {
       if (isRunning) {
-        console.warn('Owner daily summary cron skipped because a previous run is still in progress');
+        console.warn('Member email reminder cron skipped because a previous run is still in progress');
         return;
       }
 
@@ -336,7 +584,7 @@ function start() {
       try {
         await runOnce();
       } catch (err) {
-        console.error('Owner daily summary cron failed', err);
+        console.error('Member email reminder cron failed', err);
       } finally {
         isRunning = false;
       }
@@ -345,30 +593,4 @@ function start() {
   );
 }
 
-async function sendTestEmailForGym(gym_id) {
-  const gym = await prisma.gyms.findUnique({
-    where: { id: gym_id },
-    select: {
-      id: true,
-      gym_name: true,
-      email: true,
-      phone: true,
-      logo_url: true,
-      email_notifications_enabled: true,
-    },
-  });
-
-  if (!gym || !gym.email) throw new Error('Gym email not found');
-
-  const settings = await getOrCreateReminderSettings(gym.id);
-  if (!gym.email_notifications_enabled || !settings.enable_owner_daily_summary_email) {
-    throw new Error('Owner daily summary emails are disabled for this gym');
-  }
-
-  const result = await processGym(gym, new Date(), { force: true });
-  if (!result?.sent) {
-    throw new Error(result?.reason === 'send-failed' ? 'Failed to send test email' : 'Test email was not sent');
-  }
-}
-
-module.exports = { start, runOnce, sendTestEmailForGym };
+module.exports = { start, runOnce };

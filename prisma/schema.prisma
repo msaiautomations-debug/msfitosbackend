@@ -88,39 +88,43 @@ model gym_subscriptions {
 }
 
 model members {
-  id                String              @id @default(uuid())
-  gym_id            String
-  name              String
-  phone             String
-  email             String?
-  dob               DateTime?
-  plan_duration     Int
-  start_date        DateTime
-  expiry_date       DateTime
-  amount            Float
-  payment_status    String?
-  payment_method    String?
-  expiry_notified   Boolean             @default(false)
-  is_paused         Boolean             @default(false)
-  paused_at         DateTime?
-  paused_total_days Int                 @default(0)
-  is_inactive       Boolean             @default(false)
-  inactive_since    DateTime?
-  created_at        DateTime            @default(now())
-  plan_id           String?
-  bmi               Float?
-  height_cm         Float?
-  weight_kg         Float?
-  reminder_1_sent   Boolean             @default(false)
-  reminder_2_sent   Boolean             @default(false)
-  reminder_3_sent   Boolean             @default(false)
-  reminder_4_sent   Boolean             @default(false)
-  attendances       attendances[]
-  gym_notifications gym_notifications[]
-  gym               gyms                @relation(fields: [gym_id], references: [id])
-  membership_plan   membership_plans?   @relation(fields: [plan_id], references: [id])
-  payments          payments[]
-  trainer_sessions  trainer_sessions[]
+  id                       String              @id @default(uuid())
+  gym_id                   String
+  name                     String
+  phone                    String
+  email                    String?
+  dob                      DateTime?
+  plan_duration            Int
+  start_date               DateTime
+  expiry_date              DateTime
+  amount                   Float
+  payment_status           String?
+  payment_method           String?
+  expiry_notified          Boolean             @default(false)
+  is_paused                Boolean             @default(false)
+  paused_at                DateTime?
+  paused_total_days        Int                 @default(0)
+  is_inactive              Boolean             @default(false)
+  inactive_since           DateTime?
+  created_at               DateTime            @default(now())
+  plan_id                  String?
+  bmi                      Float?
+  height_cm                Float?
+  weight_kg                Float?
+  reminder_1_sent          Boolean             @default(false)
+  reminder_2_sent          Boolean             @default(false)
+  reminder_3_sent          Boolean             @default(false)
+  reminder_4_sent          Boolean             @default(false)
+  whatsapp_reminder_1_sent Boolean             @default(false)
+  whatsapp_reminder_2_sent Boolean             @default(false)
+  whatsapp_reminder_3_sent Boolean             @default(false)
+  whatsapp_reminder_4_sent Boolean             @default(false)
+  attendances              attendances[]
+  gym_notifications        gym_notifications[]
+  gym                      gyms                @relation(fields: [gym_id], references: [id])
+  membership_plan          membership_plans?   @relation(fields: [plan_id], references: [id])
+  payments                 payments[]
+  trainer_sessions         trainer_sessions[]
 
   @@index([gym_id])
   @@index([gym_id, is_inactive])
@@ -438,14 +442,14 @@ model gym_attendance_daily {
 }
 
 model member_attendance_risk {
-  id              String   @id @default(uuid())
-  member_id       String   @unique
+  id              String    @id @default(uuid())
+  member_id       String    @unique
   gym_id          String
   last_visit_date DateTime?
   visits_last_30d Int
   status          String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
 
   @@index([gym_id])
 }
@@ -510,16 +514,16 @@ model notification_health_daily {
 }
 
 model gym_renewal_queue {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   gym_id          String
-  member_id       String   @unique
+  member_id       String    @unique
   status          String
   expiry_date     DateTime
   last_visit_date DateTime?
   phone           String
   name            String
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
 
   @@index([gym_id])
 }
