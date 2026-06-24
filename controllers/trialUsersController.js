@@ -1,5 +1,4 @@
 const prisma = require('../utils/prisma');
-const { sendWhatsappMessage } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
 
 function addDays(date, days) {
@@ -353,99 +352,8 @@ const convertTrialUser = async (req, res) => {
 };
 
 const sendTrialFollowUpWhatsapps = async (req, res) => {
-  try {
-    const gym_id = req.gym_id;
-    const type = String(req.body?.type || 'trials').trim().toLowerCase();
-    const trialIds = Array.isArray(req.body?.trial_ids)
-      ? req.body.trial_ids.map((id) => String(id)).filter(Boolean)
-      : [];
-    const customMessage = String(req.body?.custom_message || '').trim();
-
-    if (!allowedFollowUpTypes.has(type)) {
-      return res.status(400).json({ error: 'Valid follow-up type is required' });
-    }
-
-    const includeLeadType = await hasLeadTypeColumn();
-    const gym = await prisma.gyms.findUnique({
-      where: { id: gym_id },
-      select: { gym_name: true, logo_url: true },
-    });
-
-    const trials = await prisma.trial_users.findMany({
-      where: buildFollowUpWhere(gym_id, type, trialIds, includeLeadType),
-      select: getTrialUserSelect(includeLeadType),
-      orderBy: [{ trial_date: 'desc' }, { created_at: 'desc' }],
-    });
-
-    if (!trials.length) {
-      return res.json({ sent: 0, failed: 0, results: [] });
-    }
-
-    const template = customMessage || getDefaultFollowUpTemplate(type);
-    const results = [];
-    let sent = 0;
-    let failed = 0;
-
-    for (const rawTrial of trials) {
-      const trial = mapLegacyLeadType(rawTrial);
-      const phone = normalizePhone(trial.phone);
-
-      if (!phone) {
-        failed += 1;
-        results.push({
-          trial_id: trial.id,
-          trial_name: trial.name,
-          phone,
-          status: 'failed',
-          error: 'Missing phone number',
-        });
-        continue;
-      }
-
-      try {
-        const message = renderLeadWhatsappTemplate(template, {
-          trial,
-          gymName: gym?.gym_name,
-          followUpType: type,
-        });
-
-        await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
-        await logGymNotification({
-          gym_id,
-          type: `trial_${type}_follow_up_whatsapp`,
-          message,
-          status: 'sent',
-        });
-
-        sent += 1;
-        results.push({ trial_id: trial.id, trial_name: trial.name, phone, status: 'sent' });
-      } catch (error) {
-        const message = error?.message || 'Failed to send follow-up WhatsApp';
-        await logGymNotification({
-          gym_id,
-          type: `trial_${type}_follow_up_whatsapp`,
-          message,
-          status: 'failed',
-        });
-        failed += 1;
-        results.push({
-          trial_id: trial.id,
-          trial_name: trial.name,
-          phone,
-          status: 'failed',
-          error: message,
-        });
-      }
-    }
-
-    res.json({ sent, failed, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: 'Failed to send trial follow-up WhatsApps',
-      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
-    });
-  }
+  // await sendWhatsappMessage({ gymId: gym_id, phone, message, mediaUrl: gym?.logo_url });
+  res.status(410).json({ error: 'WhatsApp integration has been removed', sent: 0, failed: 0, results: [] });
 };
 
 module.exports = {
