@@ -27,6 +27,7 @@ const websitePricingRoutes = require('./routes/websitePricing');
 const websiteInquiryRoutes = require('./routes/websiteInquiries');
 const userRoutes = require('./routes/user');
 const ownerDashboardRoutes = require('./routes/ownerDashboard');
+const cronRoutes = require('./routes/cron');
 const expiryNotifications = require('./cron/expiryNotifications');
 const memberEmailReminders = require('./cron/memberEmailReminders');
 const prisma = require('./utils/prisma');
@@ -175,6 +176,7 @@ app.use('/api/website-inquiries', websiteInquiryRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/owner/dashboard', ownerDashboardRoutes);
 app.use('/api/owner', ownerDashboardRoutes);
+app.use('/api/cron', cronRoutes);
 
 app.get('/api/ping', (req, res) => {
   res.json({
