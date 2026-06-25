@@ -11,6 +11,6 @@ jobs:
     steps:
       - name: Trigger cron endpoint
         run: |
-          curl -X POST https://msfitos.in/api/cron/run \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -f
+          curl -X POST https://whitesmoke-squirrel-937182.hostingersite.com/api/cron/run \
+  -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+  -f
