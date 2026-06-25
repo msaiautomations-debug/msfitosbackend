@@ -1,0 +1,16 @@
+name: Cron Job Trigger
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger cron endpoint
+        run: |
+          curl -X POST https://msfitos.in/api/cron/run \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -f
