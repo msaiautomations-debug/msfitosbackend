@@ -12,5 +12,5 @@ jobs:
       - name: Trigger cron endpoint
         run: |
           curl -X POST https://whitesmoke-squirrel-937182.hostingersite.com/api/cron/run \
-  -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-  -f
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -f
