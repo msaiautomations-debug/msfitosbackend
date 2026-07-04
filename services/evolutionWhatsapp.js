@@ -11,7 +11,13 @@ function getConfig() {
   return { baseUrl, apiKey };
 }
 
+function isDirectInstanceName(value) {
+  return String(value || '').startsWith('owner_');
+}
+
 async function getInstanceName(gymId) {
+  if (isDirectInstanceName(gymId)) return String(gymId);
+
   const prisma = require('../utils/prisma');
   const gym = await prisma.gyms.findUnique({
     where: { id: gymId },
@@ -20,7 +26,6 @@ async function getInstanceName(gymId) {
   if (!gym?.whatsapp_instance_name) throw new Error('WhatsApp instance not configured for this gym');
   return gym.whatsapp_instance_name;
 }
-
 
 function getHeaders(apiKey, includeJson = false) {
   return {
@@ -70,6 +75,22 @@ function extractPairingCode(data) {
   return data?.pairingCode || data?.pairing_code || data?.qrcode?.pairingCode || null;
 }
 
+function extractConnectedPhone(data) {
+  const candidates = [
+    data?.phone,
+    data?.number,
+    data?.instance?.phone,
+    data?.instance?.number,
+    data?.instance?.owner,
+    data?.instance?.ownerJid,
+    data?.owner,
+    data?.ownerJid,
+  ];
+
+  const value = candidates.find(Boolean);
+  if (!value) return null;
+  return cleanPhoneNumber(String(value).split('@')[0]);
+}
 async function request(url, options = {}) {
   const response = await fetch(url, options);
   const data = await readJsonResponse(response);
@@ -165,6 +186,7 @@ function buildStartResult(data, fallbackState = 'qr_pending') {
   return {
     qrCode: extractQrCode(data),
     pairingCode: extractPairingCode(data),
+    phone: extractConnectedPhone(data),
     state: fallbackState,
     response: data,
   };
@@ -180,7 +202,7 @@ async function getStatus(gymId) {
     });
 
     const state = data?.instance?.state || data?.state || 'unknown';
-    return { state, status: state === 'open' ? 'ready' : state, response: data };
+    return { state, status: state === 'open' ? 'ready' : state, phone: extractConnectedPhone(data), response: data };
   } catch (err) {
     if (err?.status === 404 || err?.status === 400 || err?.status === 403) {
       return { state: 'not_created', status: 'not_created', error: err.message };
@@ -237,7 +259,7 @@ async function requestPairingCode(gymId, phone) {
     const instanceName = await getInstanceName(gymId);
     const data = await connectInstance(baseUrl, apiKey, instanceName, phone);
 
-    return { pairingCode: extractPairingCode(data), response: data };
+    return { pairingCode: extractPairingCode(data), phone: extractConnectedPhone(data), response: data };
   } catch (err) {
     return { error: err.message };
   }

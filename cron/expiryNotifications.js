@@ -8,7 +8,9 @@ const { renderMembershipEmail } = require('../services/membershipEmailService');
 const { sendWhatsappMessage, getStatus } = require('../services/evolutionWhatsapp');
 const { logGymNotification } = require('../services/notificationService');
 const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
+const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 8 * * *';
 let isRunning = false;
+let isOwnerSummaryRunning = false;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -449,8 +451,7 @@ async function runOnce(now = new Date()) {
 }
 
 function start() {
-  const options = {};
-  if (process.env.CRON_TIMEZONE) options.timezone = process.env.CRON_TIMEZONE;
+  const options = { timezone: process.env.CRON_TIMEZONE || 'Asia/Kolkata' };
 
   cron.schedule(
     MEMBER_EMAIL_REMINDER_CRON,
@@ -471,6 +472,27 @@ function start() {
     },
     options,
   );
-}
 
+  cron.schedule(
+    OWNER_DAILY_SUMMARY_CRON,
+    async () => {
+      if (isOwnerSummaryRunning) {
+        console.warn('Owner daily summary cron skipped because a previous run is still in progress');
+        return;
+      }
+
+      isOwnerSummaryRunning = true;
+      try {
+        await processAllOwnerSummaries(new Date());
+      } catch (err) {
+        console.error('Owner daily summary cron failed', err);
+      } finally {
+        isOwnerSummaryRunning = false;
+      }
+    },
+    options,
+  );
+
+  console.log(`Owner daily summary cron scheduled: ${OWNER_DAILY_SUMMARY_CRON} (${options.timezone})`);
+}
 module.exports = { start, runOnce };

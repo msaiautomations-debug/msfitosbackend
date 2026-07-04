@@ -2,8 +2,11 @@ require('dotenv').config();
 
 const express = require('express');
 
-require('./cron/expiryNotifications');
-require('./cron/memberEmailReminders');
+const expiryNotifications = require('./cron/expiryNotifications');
+const memberEmailReminders = require('./cron/memberEmailReminders');
+
+expiryNotifications.start();
+memberEmailReminders.start();
 
 const app = express();
 const PORT = process.env.CRON_PORT || 4000;

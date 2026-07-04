@@ -1,7 +1,7 @@
 require('dotenv').config();
 
-require('./expiryNotifications');
-require('./memberEmailReminders');
+const expiryNotifications = require('./expiryNotifications');
+const memberEmailReminders = require('./memberEmailReminders');
 
 function getIstTimestamp() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -19,6 +19,9 @@ function getIstTimestamp() {
 function logWithIst(message) {
   console.log(`[${getIstTimestamp()} IST] ${message}`);
 }
+
+expiryNotifications.start();
+memberEmailReminders.start();
 
 logWithIst('Cron background worker started');
 

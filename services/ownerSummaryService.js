@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
 const { sendEmail } = require('../services/emailService');
+const { getStatus, sendWhatsappMessage } = require('../services/evolutionWhatsapp');
 
 function ownerSessionKey(ownerId) {
   return `owner_${ownerId}`;
@@ -446,14 +447,32 @@ async function processAllOwnerSummaries(now) {
         }
       }
 
-      // 2. WhatsApp integration removed with Baileys cleanup.
+      // 2. Send WhatsApp through the owner's Evolution instance.
       if (owner.whatsapp_verified && owner.whatsapp_number) {
-        // await sendWhatsappMessage({
-        //   gymId: ownerSessionKey(owner.id),
-        //   phone: owner.whatsapp_number,
-        //   message,
-        // });
-        console.log(`[OwnerSummary] WhatsApp skipped for ${owner.name} (integration removed)`);
+        try {
+          const sessionKey = ownerSessionKey(owner.id);
+          const status = await getStatus(sessionKey);
+
+          if (status.status !== 'ready') {
+            if (status.status === 'not_created') {
+              await prisma.owners.update({
+                where: { id: owner.id },
+                data: { whatsapp_verified: false },
+              });
+            }
+            console.warn(`[OwnerSummary] WhatsApp skipped for ${owner.name} (session ${status.status || status.state || 'unknown'})`);
+          } else {
+            const message = buildWhatsappMessage(summary, dateStr);
+            await sendWhatsappMessage({
+              gymId: sessionKey,
+              phone: owner.whatsapp_number,
+              message,
+            });
+            console.log(`[OwnerSummary] WhatsApp sent to ${owner.name}`);
+          }
+        } catch (whatsappErr) {
+          console.error(`[OwnerSummary] WhatsApp failed for ${owner.name}:`, whatsappErr?.message);
+        }
       } else {
         console.log(`[OwnerSummary] WhatsApp skipped for ${owner.name} (not verified)`);
       }
@@ -468,8 +487,33 @@ async function processAllOwnerSummaries(now) {
 }
 
 async function sendTestOwnerSummary(ownerId) {
-  // await sendWhatsappMessage({ gymId: ownerSessionKey(owner.id), phone: owner.whatsapp_number, message });
-  throw new Error('WhatsApp integration has been removed');
+  const owner = await prisma.owners.findUnique({
+    where: { id: ownerId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      whatsapp_number: true,
+      whatsapp_verified: true,
+      expiring_soon_days: true,
+    },
+  });
+
+  if (!owner) throw new Error('Owner not found');
+  if (!owner.whatsapp_verified || !owner.whatsapp_number) {
+    throw new Error('Owner WhatsApp not verified');
+  }
+
+  const now = new Date();
+  const summary = await buildOwnerSummary(owner, now);
+  if (!summary) throw new Error('Owner has no assigned gyms');
+
+  await sendWhatsappMessage({
+    gymId: ownerSessionKey(owner.id),
+    phone: owner.whatsapp_number,
+    message: buildWhatsappMessage(summary, formatDate(now)),
+  });
 }
 
 module.exports = { processAllOwnerSummaries, buildOwnerSummary, sendTestOwnerSummary };
