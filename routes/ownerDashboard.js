@@ -20,7 +20,6 @@ const {
   updateExpiringSoonDays,
   getOwnerWhatsappStatus,
   startOwnerWhatsapp,
-  requestOwnerPairingCode,
   logoutOwnerWhatsapp,
   testOwnerSummaryWhatsapp,
 } = require('../controllers/ownerSettingsController');
@@ -53,8 +52,8 @@ router.put('/settings/expiring-days', authenticateOwner, updateExpiringSoonDays)
 // --- WhatsApp (owner auth required) ---
 router.get('/whatsapp/status', authenticateOwner, getOwnerWhatsappStatus);
 router.post('/whatsapp/start', authenticateOwner, startOwnerWhatsapp);
-router.post('/whatsapp/pairing-code', authenticateOwner, requestOwnerPairingCode);
 router.post('/whatsapp/logout', authenticateOwner, logoutOwnerWhatsapp);
 router.post('/whatsapp/test-summary', authenticateOwner, testOwnerSummaryWhatsapp);
 
 module.exports = router;
+

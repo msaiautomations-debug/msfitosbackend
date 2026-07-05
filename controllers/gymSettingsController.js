@@ -47,7 +47,6 @@ const getGymSettings = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
-      whatsapp_instance_name: true,
     },
   });
 
@@ -62,7 +61,6 @@ const getGymSettings = async (req, res) => {
       email: gym.email,
       phone: gym.phone,
       logo_url: gym.logo_url,
-      whatsapp_instance_name: gym.whatsapp_instance_name || null,
     },
   });
 };
@@ -73,10 +71,6 @@ const updateGymSettings = async (req, res) => {
   const ownerName = req.body?.owner_name === undefined ? undefined : String(req.body.owner_name || '').trim();
   const phone = req.body?.phone === undefined ? undefined : String(req.body.phone || '').trim();
   const logoUrl = normalizePublicImageUrl(req.body?.logo_url);
-  const instanceName = req.body?.whatsapp_instance_name === undefined
-    ? undefined
-    : String(req.body.whatsapp_instance_name || '').trim() || null;
-
   if (req.body?.logo_url && !logoUrl) {
     return res.status(400).json({ error: 'Valid public image URL is required' });
   }
@@ -87,7 +81,6 @@ const updateGymSettings = async (req, res) => {
     ...(ownerName !== undefined ? { owner_name: ownerName } : {}),
     ...(phone !== undefined ? { phone } : {}),
     ...(req.body?.logo_url !== undefined ? { logo_url: logoUrl } : {}),
-    ...(instanceName !== undefined ? { whatsapp_instance_name: instanceName } : {}),
   };
 
   const gym = await prisma.gyms.update({
@@ -101,7 +94,6 @@ const updateGymSettings = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
-      whatsapp_instance_name: true,
     },
   });
 
@@ -114,7 +106,6 @@ const updateGymSettings = async (req, res) => {
       email: gym.email,
       phone: gym.phone,
       logo_url: gym.logo_url,
-      whatsapp_instance_name: gym.whatsapp_instance_name || null,
     },
     message: 'Settings updated',
   });
@@ -210,7 +201,6 @@ const uploadGymLogo = async (req, res) => {
       email: true,
       phone: true,
       logo_url: true,
-      whatsapp_instance_name: true,
     },
   });
 
@@ -223,7 +213,6 @@ const uploadGymLogo = async (req, res) => {
       email: updatedGym.email,
       phone: updatedGym.phone,
       logo_url: updatedGym.logo_url,
-      whatsapp_instance_name: updatedGym.whatsapp_instance_name || null,
     },
     message: 'Logo uploaded',
   });

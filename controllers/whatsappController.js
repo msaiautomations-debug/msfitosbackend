@@ -1,215 +1,134 @@
 const prisma = require('../utils/prisma');
-const { logGymNotification } = require('../services/notificationService');
 const {
   getStatus,
   startClient,
   logoutClient,
-  requestPairingCode,
   sendWhatsappMessage,
-} = require('../services/evolutionWhatsapp');
-
-function mapEvolutionStateToStatus(state) {
-  const normalized = String(state || '').toLowerCase();
-
-  if (normalized === 'open') return 'ready';
-  if (normalized === 'connecting') return 'starting';
-  if (normalized === 'close' || normalized === 'closed') return 'logged_out';
-  if (normalized === 'not_created') return 'logged_out';
-  if (normalized === 'qr_pending') return 'qr';
-
-  return normalized || 'unknown';
-}
-
-function statusPayload(result) {
-  if (result?.error && !result?.state) {
-    return { status: 'error', message: result.error };
-  }
-
-  const status = mapEvolutionStateToStatus(result?.state);
-  return {
-    status,
-    message: result?.error || null,
-    updated_at: new Date().toISOString(),
-  };
-}
-
-function qrPayload(result) {
-  if (result?.error) {
-    return { status: 'error', message: result.error };
-  }
-
-  if (result?.qrCode) {
-    return {
-      status: 'qr',
-      qr: result.qrCode,
-      message: 'Scan this QR code from WhatsApp linked devices.',
-      updated_at: new Date().toISOString(),
-    };
-  }
-
-  if (result?.pairingCode) {
-    return {
-      status: 'pairing_code',
-      message: result.pairingCode,
-      updated_at: new Date().toISOString(),
-    };
-  }
-
-  return {
-    status: mapEvolutionStateToStatus(result?.state),
-    message: 'WhatsApp session started, but Evolution API did not return a QR code.',
-    updated_at: new Date().toISOString(),
-  };
-}
-
-function pairingPayload(result) {
-  if (result?.error) {
-    return { status: 'error', message: result.error };
-  }
-
-  return {
-    status: result?.pairingCode ? 'pairing_code' : 'starting',
-    message: result?.pairingCode || 'Pairing code was not returned by Evolution API.',
-    updated_at: new Date().toISOString(),
-  };
-}
-
-async function getGymLogo(gymId) {
-  return prisma.gyms.findUnique({
-    where: { id: gymId },
-    select: { logo_url: true },
-  });
-}
+} = require('../services/whatsappService');
+const { logGymNotification } = require('../services/notificationService');
 
 const getWhatsappStatus = async (req, res) => {
   try {
-    const result = await getStatus(req.gym_id);
-    res.json(statusPayload(result));
+    const status = await getStatus(req.gym_id);
+    res.json(status);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err?.message || 'Failed to get WhatsApp status' });
   }
 };
 
 const startWhatsapp = async (req, res) => {
   try {
-    const result = await startClient(req.gym_id);
-    res.json(qrPayload(result));
+    const status = await startClient(req.gym_id);
+    res.json(status);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err?.message || 'Failed to start WhatsApp' });
   }
 };
 
 const logoutWhatsapp = async (req, res) => {
   try {
-    const result = await logoutClient(req.gym_id);
-
-    if (result?.error) {
-      return res.json({ status: 'error', message: result.error });
-    }
-
-    return res.json({ status: 'logged_out', message: 'WhatsApp logged out', updated_at: new Date().toISOString() });
+    const status = await logoutClient(req.gym_id);
+    res.json(status);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-};
-
-const requestWhatsappPairingCode = async (req, res) => {
-  try {
-    const { phone } = req.body;
-    const result = await requestPairingCode(req.gym_id, phone);
-    res.json(pairingPayload(result));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err?.message || 'Failed to logout WhatsApp' });
   }
 };
 
 const sendTestWhatsapp = async (req, res) => {
-  try {
-    const { phone, message } = req.body;
-    const gym = await getGymLogo(req.gym_id);
-    const result = await sendWhatsappMessage({
-      gymId: req.gym_id,
-      phone,
-      message,
-      mediaUrl: gym?.logo_url,
-    });
+  const phone = String(req.body?.phone || '').trim();
+  const message = String(req.body?.message || 'Test message from MS FitOS WhatsApp integration.').trim();
 
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  if (!phone) return res.status(400).json({ error: 'Phone number is required' });
+
+  try {
+    const gym = await prisma.gyms.findUnique({
+      where: { id: req.gym_id },
+      select: { logo_url: true },
+    });
+    const result = await sendWhatsappMessage({ gymId: req.gym_id, phone, message, mediaUrl: gym?.logo_url });
+    await logGymNotification({
+      gym_id: req.gym_id,
+      type: 'whatsapp_test',
+      message,
+      status: 'sent',
+    });
+    res.json({ sent: true, phone: result.phone });
+  } catch (error) {
+    await logGymNotification({
+      gym_id: req.gym_id,
+      type: 'whatsapp_test',
+      message: error?.message || 'WhatsApp test failed',
+      status: 'failed',
+    });
+    res.status(400).json({ error: error?.message || 'Failed to send WhatsApp test' });
   }
 };
 
 const broadcastFitnessTip = async (req, res) => {
-  try {
-    const gymId = req.gym_id;
-    const { id } = req.params;
+  const tipId = String(req.params.id || '');
+  const memberIds = Array.isArray(req.body?.member_ids)
+    ? req.body.member_ids.map((id) => String(id)).filter(Boolean)
+    : [];
 
-    const [gym, tip, members] = await Promise.all([
-      getGymLogo(gymId),
-      prisma.fitness_tips.findFirst({
-        where: { id, gym_id: gymId },
-        select: { message: true },
-      }),
-      prisma.members.findMany({
-        where: {
-          gym_id: gymId,
-          phone: { not: '' },
-        },
-        select: { id: true, name: true, phone: true },
-      }),
-    ]);
+  const tip = await prisma.fitness_tips.findFirst({
+    where: { id: tipId, gym_id: req.gym_id },
+  });
 
-    if (!tip) {
-      return res.status(404).json({ error: 'Fitness tip not found' });
+  if (!tip) return res.status(404).json({ error: 'Tip not found' });
+
+  const members = await prisma.members.findMany({
+    where: {
+      gym_id: req.gym_id,
+      is_inactive: false,
+      ...(memberIds.length ? { id: { in: memberIds } } : {}),
+    },
+    select: { id: true, name: true, phone: true },
+    orderBy: { created_at: 'desc' },
+  });
+
+  const message = `${tip.title}\n\n${tip.message}`;
+  const gym = await prisma.gyms.findUnique({
+    where: { id: req.gym_id },
+    select: { logo_url: true },
+  });
+  let sent = 0;
+  let failed = 0;
+  const results = [];
+
+  for (const member of members) {
+    try {
+      await sendWhatsappMessage({ gymId: req.gym_id, phone: member.phone, message, mediaUrl: gym?.logo_url });
+      await logGymNotification({
+        gym_id: req.gym_id,
+        member_id: member.id,
+        type: 'fitness_tip_whatsapp',
+        message: tip.title,
+        status: 'sent',
+      });
+      sent += 1;
+      results.push({ member_id: member.id, member_name: member.name, status: 'sent' });
+    } catch (error) {
+      const errorMessage = error?.message || 'Failed to send WhatsApp tip';
+      await logGymNotification({
+        gym_id: req.gym_id,
+        member_id: member.id,
+        type: 'fitness_tip_whatsapp',
+        message: errorMessage,
+        status: 'failed',
+      });
+      failed += 1;
+      results.push({ member_id: member.id, member_name: member.name, status: 'failed', error: errorMessage });
     }
-
-    let sent = 0;
-    let failed = 0;
-    const results = [];
-
-    for (const member of members) {
-      try {
-        await sendWhatsappMessage({
-          gymId,
-          phone: member.phone,
-          message: tip.message,
-          mediaUrl: gym?.logo_url,
-        });
-        await logGymNotification({
-          gym_id: gymId,
-          member_id: member.id,
-          type: 'fitness_tip_whatsapp',
-          message: tip.message,
-          status: 'sent',
-        });
-        sent += 1;
-        results.push({ member_id: member.id, member_name: member.name, status: 'sent' });
-      } catch (error) {
-        const errorMessage = error?.message || 'Failed to send fitness tip WhatsApp';
-        await logGymNotification({
-          gym_id: gymId,
-          member_id: member.id,
-          type: 'fitness_tip_whatsapp',
-          message: errorMessage,
-          status: 'failed',
-        });
-        failed += 1;
-        results.push({ member_id: member.id, member_name: member.name, status: 'failed', error: errorMessage });
-      }
-    }
-
-    return res.json({ sent, failed, results });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
   }
+
+  res.json({ sent, failed, results });
 };
 
 module.exports = {
   getWhatsappStatus,
   startWhatsapp,
   logoutWhatsapp,
-  requestWhatsappPairingCode,
   sendTestWhatsapp,
   broadcastFitnessTip,
 };
+

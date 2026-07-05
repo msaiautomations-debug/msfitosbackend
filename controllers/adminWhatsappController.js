@@ -1,18 +1,30 @@
-const WHATSAPP_DISABLED_RESPONSE = { error: 'WhatsApp integration has been removed' };
+const { getStatus, startClient, logoutClient } = require('../services/whatsappService');
 
 const getAdminWhatsappStatus = async (req, res) => {
-  // const status = await getStatus();
-  res.status(410).json(WHATSAPP_DISABLED_RESPONSE);
+  try {
+    const status = await getStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to get WhatsApp status' });
+  }
 };
 
 const startAdminWhatsapp = async (req, res) => {
-  // const status = await startClient();
-  res.status(410).json(WHATSAPP_DISABLED_RESPONSE);
+  try {
+    const status = await startClient();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to start WhatsApp' });
+  }
 };
 
 const logoutAdminWhatsapp = async (req, res) => {
-  // const status = await logoutClient();
-  res.status(410).json(WHATSAPP_DISABLED_RESPONSE);
+  try {
+    const status = await logoutClient();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Failed to logout WhatsApp' });
+  }
 };
 
 module.exports = {

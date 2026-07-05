@@ -1,6 +1,7 @@
 const prisma = require('../utils/prisma');
 const { sendEmail } = require('../services/emailService');
-const { getStatus, sendWhatsappMessage } = require('../services/evolutionWhatsapp');
+const { getStatus, sendWhatsappMessage } = require('../services/whatsappService');
+const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 
 function ownerSessionKey(ownerId) {
   return `owner_${ownerId}`;
@@ -18,22 +19,54 @@ function formatCurrency(amount) {
   return `₹${Number(amount || 0).toLocaleString('en-IN')}`;
 }
 
+async function getOwnerGyms(owner) {
+  const ownerEmail = String(owner?.email || '').trim();
+  const [access, linkedGyms] = await Promise.all([
+    prisma.admin_gym_access.findMany({
+      where: { owner_id: owner.id },
+      select: { gym_id: true },
+    }),
+    prisma.gyms.findMany({
+      where: {
+        OR: [
+          { owner_id: owner.id },
+          ...(ownerEmail ? [{ owner_email: ownerEmail }, { email: ownerEmail }] : []),
+        ],
+      },
+      select: { id: true },
+    }),
+  ]);
+
+  const gymIds = [...new Set([...access.map((item) => item.gym_id), ...linkedGyms.map((gym) => gym.id)])];
+  if (!gymIds.length) return [];
+
+  return prisma.gyms.findMany({
+    where: { id: { in: gymIds } },
+    select: { id: true, gym_name: true },
+    orderBy: { gym_name: 'asc' },
+  });
+}
+
+async function getOwnerSummaryDelivery(gyms) {
+  let emailEnabled = false;
+  let whatsappEnabled = false;
+
+  for (const gym of gyms) {
+    const settings = await getOrCreateReminderSettings(gym.id);
+    emailEnabled = emailEnabled || Boolean(settings.enable_owner_daily_summary_email);
+    whatsappEnabled = whatsappEnabled || Boolean(settings.enable_owner_daily_summary_whatsapp);
+    if (emailEnabled && whatsappEnabled) break;
+  }
+
+  return { emailEnabled, whatsappEnabled };
+}
 /**
  * Builds a rich daily summary payload using precomputed tables.
  */
-async function buildOwnerSummary(owner, now) {
-  const access = await prisma.admin_gym_access.findMany({
-    where: { owner_id: owner.id },
-    select: { gym_id: true },
-  });
-  const gymIds = access.map((a) => a.gym_id);
+async function buildOwnerSummary(owner, now, ownerGyms) {
+  const gyms = ownerGyms || await getOwnerGyms(owner);
 
-  if (!gymIds.length) return null;
-
-  const gyms = await prisma.gyms.findMany({
-    where: { id: { in: gymIds } },
-    select: { id: true, gym_name: true },
-  });
+  if (!gyms.length) return null;
   const gymNameMap = {};
   gyms.forEach(g => { gymNameMap[g.id] = g.gym_name; });
 
@@ -425,15 +458,17 @@ async function processAllOwnerSummaries(now) {
 
   for (const owner of owners) {
     try {
-      const summary = await buildOwnerSummary(owner, now);
+      const ownerGyms = await getOwnerGyms(owner);
+      const summary = await buildOwnerSummary(owner, now, ownerGyms);
 
       if (!summary) {
         console.log(`[OwnerSummary] Owner ${owner.name} has no assigned gyms, skipping`);
         continue;
       }
+      const delivery = await getOwnerSummaryDelivery(ownerGyms);
 
       // 1. Send Rich Email via Brevo
-      if (owner.email) {
+      if (owner.email && delivery.emailEnabled) {
         try {
           const html = buildEmailHtml(summary, dateStr, owner.name);
           await sendEmail({
@@ -447,8 +482,8 @@ async function processAllOwnerSummaries(now) {
         }
       }
 
-      // 2. Send WhatsApp through the owner's Evolution instance.
-      if (owner.whatsapp_verified && owner.whatsapp_number) {
+      // 2. Send WhatsApp through the owner's WhatsApp session.
+      if (owner.whatsapp_verified && owner.whatsapp_number && delivery.whatsappEnabled) {
         try {
           const sessionKey = ownerSessionKey(owner.id);
           const status = await getStatus(sessionKey);
@@ -474,7 +509,8 @@ async function processAllOwnerSummaries(now) {
           console.error(`[OwnerSummary] WhatsApp failed for ${owner.name}:`, whatsappErr?.message);
         }
       } else {
-        console.log(`[OwnerSummary] WhatsApp skipped for ${owner.name} (not verified)`);
+        const reason = !delivery.whatsappEnabled ? 'disabled' : 'not verified';
+        console.log(`[OwnerSummary] WhatsApp skipped for ${owner.name} (${reason})`);
       }
 
       sentCount++;
@@ -516,4 +552,9 @@ async function sendTestOwnerSummary(ownerId) {
   });
 }
 
-module.exports = { processAllOwnerSummaries, buildOwnerSummary, sendTestOwnerSummary };
+module.exports = { processAllOwnerSummaries, buildOwnerSummary, sendTestOwnerSummary, getOwnerGyms, getOwnerSummaryDelivery };
+
+
+
+
+

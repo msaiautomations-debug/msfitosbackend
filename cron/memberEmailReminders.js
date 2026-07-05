@@ -4,6 +4,7 @@ const { sendEmail, getEmailConfigIssues } = require('../services/emailService');
 const { getOrCreateReminderSettings } = require('../services/reminderSettingsService');
 const { renderMembershipEmail } = require('../services/membershipEmailService');
 const { logGymNotification, hasSentGymNotificationToday } = require('../services/notificationService');
+const { sendWhatsappMessage, getStatus } = require('../services/whatsappService');
 
 const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 let isRunning = false;
@@ -75,8 +76,7 @@ function renderWhatsappBody(body, { gym, member, lastCheckinDate }) {
 
 async function sendMemberWhatsapp({ gym, member, body, type, lastCheckinDate }) {
   const message = renderWhatsappBody(body, { gym, member, lastCheckinDate });
-  // await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
-  throw new Error('WhatsApp integration has been removed');
+  await sendWhatsappMessage({ gymId: gym.id, phone: member.phone, message, mediaUrl: gym.logo_url });
   await logGymNotification({
     gym_id: gym.id,
     member_id: member.id,
@@ -96,7 +96,8 @@ async function getDeliveryAvailability(gym) {
   const emailConfigIssues = getEmailConfigIssues();
   let whatsappReady = false;
 
-  // const status = await getStatus(gym.id);
+  const status = await getStatus(gym.id);
+  whatsappReady = status.status === 'ready';
 
   if (emailConfigIssues.length) {
     console.warn('Email reminder channel unavailable:', emailConfigIssues.join(', '));
@@ -573,3 +574,4 @@ function start() {
 }
 
 module.exports = { start, runOnce };
+

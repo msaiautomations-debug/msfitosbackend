@@ -1,6 +1,6 @@
 const prisma = require('../utils/prisma');
 const { logGymNotification } = require('../services/notificationService');
-const { sendWhatsappMessage } = require('../services/evolutionWhatsapp');
+const { sendWhatsappMessage } = require('../services/whatsappService');
 
 function addDays(date, days) {
   const d = new Date(date);
@@ -451,3 +451,4 @@ module.exports = {
   convertTrialUser,
   sendTrialFollowUpWhatsapps,
 };
+

@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { getStatus, startClient, logoutClient, requestPairingCode } = require('../services/evolutionWhatsapp');
+const { getStatus, startClient, logoutClient } = require('../services/whatsappService');
 
 function ownerSessionKey(ownerId) {
   return `owner_${ownerId}`;
@@ -72,7 +72,7 @@ const startOwnerWhatsapp = async (req, res) => {
     const sessionKey = ownerSessionKey(req.owner_id);
     const result = await startClient(sessionKey);
 
-    if (result.state === 'open' && result.phone) {
+    if (result.status === 'ready' && result.phone) {
       await prisma.owners.update({
         where: { id: req.owner_id },
         data: {
@@ -86,35 +86,6 @@ const startOwnerWhatsapp = async (req, res) => {
   } catch (err) {
     console.error('Start owner whatsapp error', err);
     res.status(500).json({ error: err?.message || 'Failed to start WhatsApp session' });
-  }
-};
-
-const requestOwnerPairingCode = async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) {
-      return res.status(400).json({ error: 'Phone number is required' });
-    }
-
-    const sessionKey = ownerSessionKey(req.owner_id);
-    const result = await requestPairingCode(sessionKey, phone);
-
-    if (result.error) {
-      return res.status(500).json({ error: result.error });
-    }
-
-    await prisma.owners.update({
-      where: { id: req.owner_id },
-      data: {
-        whatsapp_number: result.phone || phone,
-        whatsapp_verified: result.status === 'ready',
-      },
-    });
-
-    res.json(result);
-  } catch (err) {
-    console.error('Request owner pairing code error', err);
-    res.status(500).json({ error: err?.message || 'Failed to request pairing code' });
   }
 };
 
@@ -156,7 +127,9 @@ module.exports = {
   updateExpiringSoonDays,
   getOwnerWhatsappStatus,
   startOwnerWhatsapp,
-  requestOwnerPairingCode,
   logoutOwnerWhatsapp,
   testOwnerSummaryWhatsapp,
 };
+
+
+

@@ -5,7 +5,7 @@ const { getOrCreateReminderSettings } = require('../services/reminderSettingsSer
 const { runNightlyAggregation } = require('../services/aggregationService');
 const { processAllOwnerSummaries } = require('../services/ownerSummaryService');
 const { renderMembershipEmail } = require('../services/membershipEmailService');
-const { sendWhatsappMessage, getStatus } = require('../services/evolutionWhatsapp');
+const { sendWhatsappMessage, getStatus } = require('../services/whatsappService');
 const { logGymNotification } = require('../services/notificationService');
 const MEMBER_EMAIL_REMINDER_CRON = process.env.MEMBER_EMAIL_REMINDER_CRON || '* * * * *';
 const OWNER_DAILY_SUMMARY_CRON = process.env.OWNER_DAILY_SUMMARY_CRON || '0 8 * * *';
@@ -496,3 +496,4 @@ function start() {
   console.log(`Owner daily summary cron scheduled: ${OWNER_DAILY_SUMMARY_CRON} (${options.timezone})`);
 }
 module.exports = { start, runOnce };
+
